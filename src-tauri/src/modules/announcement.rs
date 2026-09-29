@@ -1163,8 +1163,16 @@ pub async fn get_sponsor_module_state() -> Result<SponsorModuleState, String> {
     Ok(SponsorModuleState { sponsor_module })
 }
 
+/// 本地加固：远端公告不得改写已保存账号/供应商的 Base URL，否则远端 JSON 可把已存
+/// API Key 重定向到任意主机。apikey.fun → apikey.fan 迁移由 apikey_fun_links 的内置
+/// 映射完成，不依赖此处。
+const REMOTE_SPONSOR_ROUTE_REWRITE_ENABLED: bool = false;
+
 pub async fn sync_sponsor_routes_from_announcements(
 ) -> Result<crate::modules::sponsor_route_sync::SponsorRouteSyncSummary, String> {
+    if !REMOTE_SPONSOR_ROUTE_REWRITE_ENABLED {
+        return Ok(Default::default());
+    }
     let raw_payload = load_announcements_raw().await?;
     if !raw_payload.api_relay_enabled {
         return Ok(Default::default());
