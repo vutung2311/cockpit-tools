@@ -2502,7 +2502,8 @@ pub fn save_server_status(status: &ServerStatus) -> Result<(), String> {
     let json =
         serde_json::to_string_pretty(status).map_err(|e| format!("序列化状态失败: {}", e))?;
 
-    crate::modules::atomic_write::write_string_atomic(&status_path, &json)
+    // 本地加固：状态文件包含 WS 会话鉴权 token，按密钥文件写入（0600，无 .bak）。
+    crate::modules::atomic_write::write_secret_string_atomic(&status_path, &json)
         .map_err(|e| format!("写入状态文件失败: {}", e))?;
 
     crate::modules::logger::log_info(&format!(

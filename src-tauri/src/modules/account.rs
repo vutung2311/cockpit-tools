@@ -244,8 +244,26 @@ pub fn get_data_dir() -> Result<PathBuf, String> {
     if !data_dir.exists() {
         fs::create_dir_all(&data_dir).map_err(|e| format!("创建数据目录失败: {}", e))?;
     }
+    #[cfg(all(unix, not(test)))]
+    restrict_data_dir_permissions(&data_dir);
 
     Ok(data_dir)
+}
+
+/// 本地加固：数据目录含账号、Key 与 WS 鉴权 token，仅允许当前用户访问（0700）。
+#[cfg(all(unix, not(test)))]
+fn restrict_data_dir_permissions(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    static DONE: std::sync::Once = std::sync::Once::new();
+    DONE.call_once(|| {
+        let Ok(meta) = fs::metadata(dir) else {
+            return;
+        };
+        // 不在此处写日志：logger 可能回调 get_data_dir 导致 Once 重入。
+        if meta.permissions().mode() & 0o077 != 0 {
+            let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+        }
+    });
 }
 
 /// 获取账号目录路径
