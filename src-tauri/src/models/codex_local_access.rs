@@ -126,7 +126,8 @@ impl Default for CodexLocalAccessImageGenerationStatus {
 }
 
 fn default_access_scope_for_existing_config() -> CodexLocalAccessScope {
-    CodexLocalAccessScope::Lan
+    // 本地加固：缺少 accessScope 的旧配置按仅本机处理，局域网需用户显式开启。
+    CodexLocalAccessScope::Localhost
 }
 
 fn default_restrict_free_accounts() -> bool {

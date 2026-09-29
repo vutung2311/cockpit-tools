@@ -370,6 +370,12 @@ pub async fn start_server() {
         super::logger::log_warn("[WebReport] 配置了启用但 token 为空，网页查询服务未启动");
         return;
     }
+    // 本地加固：默认占位 token 等同于无鉴权（服务监听 0.0.0.0），拒绝启动。
+    if token == "change-this-token" || token.len() < 16 {
+        set_actual_port(None);
+        super::logger::log_warn("[WebReport] token 为默认值或过短（<16），网页查询服务未启动");
+        return;
+    }
 
     let preferred_port = cfg.report_port;
     let mut port = preferred_port;
