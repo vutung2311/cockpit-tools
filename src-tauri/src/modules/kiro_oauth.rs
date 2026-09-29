@@ -1623,6 +1623,8 @@ async fn refresh_token_via_idc_oidc(
 ) -> Result<Value, String> {
     let region = resolve_idc_region(auth_token, account)
         .ok_or_else(|| "缺少 idc_region，无法执行 AWS IAM Identity Center 刷新".to_string())?;
+    // 本地加固：region 会拼进刷新地址，需校验格式，防止导入数据把 refresh token 发往他处。
+    let region = normalize_idc_region(Some(region.as_str()))?;
     let (client_id, client_secret) =
         resolve_idc_client_credentials_from_local_cache(auth_token, account)?;
 
