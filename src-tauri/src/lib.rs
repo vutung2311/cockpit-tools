@@ -1,5 +1,6 @@
 mod commands;
 pub mod error;
+mod ipc_guard;
 mod models;
 mod modules;
 mod utils;
@@ -775,7 +776,7 @@ pub fn run() {
             }
             _ => {}
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(ipc_guard::guard(tauri::generate_handler![
             commands::codex_pelican::codex_pelican_start,
             commands::codex_pelican::codex_pelican_retry,
             commands::codex_pelican::codex_pelican_active,
@@ -1600,7 +1601,7 @@ pub fn run() {
             commands::antigravity_legacy_instance::antigravity_legacy_stop_instance,
             commands::antigravity_legacy_instance::antigravity_legacy_open_instance_window,
             commands::antigravity_legacy_instance::antigravity_legacy_close_all_instances,
-        ])
+        ]))
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
