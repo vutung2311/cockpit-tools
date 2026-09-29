@@ -34,8 +34,11 @@ static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("email regex should be valid")
 });
 static BEARER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(bearer|token|api[_-]?key|secret|password)\s*[:=]\s*[^\s,;]+")
+    Regex::new(r#"(?i)\b(bearer|token|api[_-]?key|secret|password|cookie|authorization)"?\s*[:=]\s*"?[^\s,;"]+"#)
         .expect("bearer regex should be valid")
+});
+static BEARER_SCHEME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]+").expect("bearer scheme regex should be valid")
 });
 static LONG_TOKEN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b[A-Za-z0-9_\-]{32,}\b").expect("token regex should be valid"));
@@ -416,11 +419,10 @@ fn send_sentry_event(dsn: &SentryDsn, event: &Value) -> Result<(), String> {
 }
 
 fn current_dsn() -> Option<String> {
+    // 本地加固：不读取通用 SENTRY_DSN，避免其他项目的环境变量意外开启上报。
     let runtime = std::env::var("COCKPIT_SENTRY_DSN")
         .ok()
-        .or_else(|| std::env::var("SENTRY_DSN").ok())
         .or_else(|| option_env!("COCKPIT_SENTRY_DSN").map(ToString::to_string))
-        .or_else(|| option_env!("SENTRY_DSN").map(ToString::to_string))
         .unwrap_or_default();
     let trimmed = runtime.trim();
     if trimmed.is_empty()
@@ -579,6 +581,7 @@ fn sanitize_text(value: &str) -> String {
         text.push_str("...[truncated]");
     }
     text = EMAIL_RE.replace_all(&text, "[email]").to_string();
+    text = BEARER_SCHEME_RE.replace_all(&text, "Bearer [redacted]").to_string();
     text = BEARER_RE.replace_all(&text, "$1=[redacted]").to_string();
     text = LONG_TOKEN_RE.replace_all(&text, "[token]").to_string();
     text = PHONE_RE.replace_all(&text, "[phone]").to_string();
@@ -602,6 +605,10 @@ fn is_sensitive_key(key: &str) -> bool {
         || key.contains("2fa")
         || key.contains("phone")
         || key.contains("email")
+        || key.contains("cookie")
+        || key.contains("session")
+        || key.contains("credential")
+        || key.contains("refresh")
 }
 
 fn panic_message(info: &panic::PanicHookInfo<'_>) -> String {
@@ -653,5 +660,15 @@ mod tests {
 
         assert_eq!(value["password"], "[redacted]");
         assert_eq!(value["nested"]["twoFactorSecret"], "[redacted]");
+    }
+
+    #[test]
+    fn sanitize_text_redacts_short_bearer_and_json_secrets() {
+        let text = sanitize_text(
+            r#"Authorization: Bearer shortTok123 body={"password":"hunter2","api_key":"k1"}"#,
+        );
+        assert!(!text.contains("shortTok123"));
+        assert!(!text.contains("hunter2"));
+        assert!(!text.contains("\"k1\""));
     }
 }
