@@ -364,11 +364,20 @@ fn format_data_collected_at_human(meta: &ReportMeta) -> String {
 pub async fn apply_server_config() -> Result<(), String> {
     let _apply = REPORT_SERVER_APPLY.lock().await;
     let cfg = super::config::get_user_config();
-    if cfg.report_enabled && cfg.report_token.trim().is_empty() {
-        configure_listener(report_server_state(), None).await?;
-        return Err(crate::modules::i18n::translate(
-            &cfg.language, "settings.network.reportTokenRequired", &[],
-        ));
+    let token = cfg.report_token.trim().to_string();
+    if cfg.report_enabled {
+        if token.is_empty() {
+            configure_listener(report_server_state(), None).await?;
+            return Err(crate::modules::i18n::translate(
+                &cfg.language, "settings.network.reportTokenRequired", &[],
+            ));
+        }
+        // 本地加固：默认占位 token 等同于无鉴权（服务监听 0.0.0.0），拒绝启动。
+        if token == "change-this-token" || token.len() < 16 {
+            configure_listener(report_server_state(), None).await?;
+            super::logger::log_warn("[WebReport] token 为默认值或过短（<16），网页查询服务未启动");
+            return Err("Web report token must not be default placeholder and must be at least 16 characters".into());
+        }
     }
     configure_listener(report_server_state(), cfg.report_enabled.then_some(cfg.report_port)).await
 }
