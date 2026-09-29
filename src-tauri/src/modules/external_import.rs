@@ -357,6 +357,9 @@ pub fn handle_external_import_args<R: Runtime>(
         };
         payload.source = Some(source.to_string());
         payload.raw_url = Some(candidate.to_string());
+        // 本地加固：外部链接只能预填导入内容，不得自动提交或自动切换到导入账号。
+        payload.auto_import = false;
+        payload.activate = false;
 
         set_pending(payload.clone());
 
