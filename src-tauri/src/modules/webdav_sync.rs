@@ -368,6 +368,25 @@ pub fn connection_from_config(config: &UserConfig) -> Result<WebdavConnectionSet
     )
 }
 
+/// 本地加固：备份包含明文凭据且使用 Basic 认证，非本机地址必须走 https。
+fn ensure_secure_transport(base_url: &str) -> Result<(), String> {
+    let url = Url::parse(base_url).map_err(|err| format!("WebDAV 地址无效: {}", err))?;
+    if url.scheme() == "https" {
+        return Ok(());
+    }
+    let is_loopback = match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    if is_loopback {
+        Ok(())
+    } else {
+        Err("WebDAV 备份包含账号凭据，非本机地址必须使用 https".to_string())
+    }
+}
+
 pub fn connection_from_parts(
     base_url: &str,
     username: &str,
@@ -375,6 +394,7 @@ pub fn connection_from_parts(
     remote_dir: &str,
 ) -> Result<WebdavConnectionSettings, String> {
     let normalized_base_url = normalize_base_url(base_url)?;
+    ensure_secure_transport(&normalized_base_url)?;
     let normalized_remote_dir = normalize_remote_dir(remote_dir)?;
     let normalized_username = username.trim().to_string();
     if normalized_username.is_empty() {
@@ -456,7 +476,14 @@ fn file_kind(file_name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_base_url, normalize_remote_dir};
+    use super::{connection_from_parts, normalize_base_url, normalize_remote_dir};
+
+    #[test]
+    fn connection_requires_https_for_remote_hosts() {
+        assert!(connection_from_parts("http://dav.example.com/dav/", "u", "p", "d").is_err());
+        assert!(connection_from_parts("https://dav.example.com/dav/", "u", "p", "d").is_ok());
+        assert!(connection_from_parts("http://127.0.0.1:8080/dav/", "u", "p", "d").is_ok());
+    }
 
     #[test]
     fn normalize_webdav_target_rejects_invalid_values() {
