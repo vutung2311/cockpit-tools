@@ -17,6 +17,16 @@ pub fn host_from_url(url: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
+    // 本地加固：带 scheme 时使用与实际连接相同的 url 解析，避免
+    // `https://evil.com?@allowed.com/` 之类的解析差异绕过白名单。
+    if trimmed.contains("://") {
+        let parsed = url::Url::parse(trimmed).ok()?;
+        return match parsed.host()? {
+            url::Host::Domain(host) => Some(host.to_ascii_lowercase()),
+            url::Host::Ipv4(ip) => Some(ip.to_string()),
+            url::Host::Ipv6(ip) => Some(ip.to_string()),
+        };
+    }
     let without_scheme = trimmed
         .split("://")
         .nth(1)
@@ -84,6 +94,14 @@ mod tests {
 
     #[test]
     fn parses_hosts_and_allowlist() {
+        assert_eq!(
+            host_from_url("https://evil.com?@dav.example.com/").as_deref(),
+            Some("evil.com")
+        );
+        assert_eq!(
+            host_from_url("https://evil.com\\@dav.example.com/").as_deref(),
+            Some("evil.com")
+        );
         assert_eq!(
             host_from_url("https://dav.example.com:443/path").as_deref(),
             Some("dav.example.com")
