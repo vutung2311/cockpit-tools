@@ -3,13 +3,14 @@
 # guard is still wired in, and list upstream changes to security-relevant code so
 # they can be reviewed before running the new build.
 #
-# Usage: scripts/local/rebase-hardening.sh            (defaults to origin/main)
-#        UPSTREAM=origin/some-branch scripts/local/rebase-hardening.sh
+# Remotes: origin = our fork, upstream = jlcodes99/cockpit-tools.
+# Usage: scripts/local/rebase-hardening.sh            (rebases main onto upstream/main)
+#        UPSTREAM=upstream/some-branch scripts/local/rebase-hardening.sh
 #        SKIP_CARGO=1 scripts/local/rebase-hardening.sh (skip cargo check/test)
 set -euo pipefail
 
-BRANCH="${BRANCH:-hardening/token-safety}"
-UPSTREAM="${UPSTREAM:-origin/main}"
+BRANCH="${BRANCH:-main}"
+UPSTREAM="${UPSTREAM:-upstream/main}"
 REMOTE="${UPSTREAM%%/*}"
 
 cd "$(git rev-parse --show-toplevel)"
@@ -100,3 +101,4 @@ fi
 
 echo
 echo "Done. $BRANCH is on top of $UPSTREAM."
+echo "Publish with: git push --force-with-lease origin $BRANCH"
