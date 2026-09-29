@@ -51,6 +51,16 @@ type ManagedApiKey = {
 };
 
 const APIKEY_FUN_KEYS_STORAGE_KEY = 'apikey_fun_managed_keys';
+
+function isApiKeyFunHostUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return url.protocol === 'https:' && (host === 'apikey.fan' || host.endsWith('.apikey.fan'));
+  } catch {
+    return false;
+  }
+}
 const APIKEY_FUN_AUTO_QUERY_DELAY_MS = 650;
 
 function maskKey(value: string): string {
@@ -177,7 +187,10 @@ export function ApiKeyFunPage() {
     const remoteBaseUrl = sponsorIntegration?.enabled
       ? sponsorIntegration.baseUrl?.trim()
       : '';
-    return remoteBaseUrl || buildApiKeyFunProviderBaseUrl(APIKEY_FUN_GLOBAL_ENDPOINT);
+    // 本地加固：远端公告只能在 apikey.fan 域内调整地址，避免把已存密钥发往任意主机。
+    return (remoteBaseUrl && isApiKeyFunHostUrl(remoteBaseUrl))
+      ? remoteBaseUrl
+      : buildApiKeyFunProviderBaseUrl(APIKEY_FUN_GLOBAL_ENDPOINT);
   }, [sponsorIntegration]);
   const claudeBaseUrl = useMemo(
     () => providerBaseUrl.replace(/\/+$/, '').replace(/\/v1$/i, ''),
