@@ -558,8 +558,55 @@ pub async fn start_server() {
 }
 
 /// 处理单个客户端连接
+/// 本地加固：浏览器会为 WebSocket 附带 Origin，且 WS 不受 CORS 约束。拒绝来自普通网页的
+/// 握手，避免任意网站枚举账号或触发切号；插件（Node 客户端）通常不带 Origin。
+fn is_allowed_ws_origin(origin: Option<&str>) -> bool {
+    let Some(origin) = origin.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    let Ok(url) = url::Url::parse(origin) else {
+        return false;
+    };
+    match url.scheme() {
+        "vscode-webview" | "vscode-file" | "vscode" | "tauri" => true,
+        "http" | "https" => matches!(
+            url.host(),
+            Some(url::Host::Domain("localhost"))
+                | Some(url::Host::Domain("tauri.localhost"))
+                | Some(url::Host::Ipv4(std::net::Ipv4Addr::LOCALHOST))
+        ) || matches!(url.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback()),
+        _ => false,
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn check_ws_origin(
+    request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+    response: tokio_tungstenite::tungstenite::handshake::server::Response,
+) -> Result<
+    tokio_tungstenite::tungstenite::handshake::server::Response,
+    tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+> {
+    let origin = request
+        .headers()
+        .get("origin")
+        .and_then(|value| value.to_str().ok());
+    if is_allowed_ws_origin(origin) {
+        return Ok(response);
+    }
+    crate::modules::logger::log_warn(&format!(
+        "[WS] 拒绝非本地来源的握手: origin={}",
+        origin.unwrap_or("-")
+    ));
+    let mut error = tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(Some(
+        "origin not allowed".to_string(),
+    ));
+    *error.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN;
+    Err(error)
+}
+
 async fn handle_connection(server: Arc<WsServer>, stream: TcpStream, addr: SocketAddr) {
-    let ws_stream = match tokio_tungstenite::accept_async(stream).await {
+    let ws_stream = match tokio_tungstenite::accept_hdr_async(stream, check_ws_origin).await {
         Ok(ws) => ws,
         Err(e) => {
             crate::modules::logger::log_error(&format!("[WS] 握手失败 {}: {}", addr, e));
@@ -1111,4 +1158,21 @@ fn handle_set_language(language: &str, source: Option<&str>) -> Result<String, S
     broadcast_language_changed(&normalized, source.unwrap_or("ws"));
 
     Ok(format!("语言已更新为 {}", normalized))
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::is_allowed_ws_origin;
+
+    #[test]
+    fn allows_local_clients_and_rejects_websites() {
+        assert!(is_allowed_ws_origin(None));
+        assert!(is_allowed_ws_origin(Some("vscode-webview://abc")));
+        assert!(is_allowed_ws_origin(Some("http://localhost:1420")));
+        assert!(is_allowed_ws_origin(Some("http://127.0.0.1:3000")));
+        assert!(is_allowed_ws_origin(Some("tauri://localhost")));
+        assert!(!is_allowed_ws_origin(Some("https://evil.example")));
+        assert!(!is_allowed_ws_origin(Some("http://localhost.evil.example")));
+        assert!(!is_allowed_ws_origin(Some("null")));
+    }
 }
