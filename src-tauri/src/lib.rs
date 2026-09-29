@@ -4,6 +4,7 @@
 
 mod commands;
 pub mod error;
+mod ipc_guard;
 mod models;
 mod modules;
 mod utils;
@@ -913,7 +914,7 @@ pub fn run() {
             }
             _ => {}
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(ipc_guard::guard(tauri::generate_handler![
             commands::codex_pelican::codex_pelican_start,
             commands::codex_pelican::codex_pelican_retry,
             commands::codex_pelican::codex_pelican_active,
@@ -2025,7 +2026,7 @@ pub fn run() {
             commands::antigravity_token_usage::antigravity_get_token_usage_settings,
             commands::antigravity_token_usage::antigravity_set_token_usage_data_dir,
             commands::antigravity_token_usage::antigravity_set_rehydrate_enabled,
-        ])
+        ]))
         .build(context)
         .expect("error while building tauri application");
 
