@@ -305,6 +305,9 @@ fn summarize_deep_link_args(args: &[String]) -> Vec<String> {
         .map(|value| {
             if value.trim().to_ascii_lowercase().starts_with("zcode://") {
                 "zcode://<oauth-callback>".to_string()
+            } else if let Some((base, _)) = value.split_once(['?', '#']) {
+                // 本地加固：query 中可能携带 token/payload，不写入日志。
+                format!("{}?<redacted>", base)
             } else {
                 value.clone()
             }
