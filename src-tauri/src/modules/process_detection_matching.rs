@@ -71,6 +71,36 @@ mod linux_antigravity_process_candidate_tests {
     }
 
     #[test]
+    fn packaged_entry_script_matches_launcher_symlinked_into_the_app_dir() {
+        let root = std::env::temp_dir().join(format!("ag-entry-script-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let app = root.join("opt/antigravity-ide");
+        std::fs::create_dir_all(app.join("resources/app/extensions")).unwrap();
+        std::fs::create_dir_all(root.join("usr/bin")).unwrap();
+        let launcher = root.join("usr/bin/antigravity-ide");
+        std::fs::write(&launcher, "#!/bin/sh\n").unwrap();
+        std::os::unix::fs::symlink(&launcher, app.join("antigravity-ide")).unwrap();
+        let launcher = launcher.to_string_lossy().into_owned();
+        let app = app.to_string_lossy().into_owned();
+
+        let main = linux_proc_cmdline_args(
+            format!("/usr/lib/electron39/electron\0{app}/resources/app/antigravity-ide.js\0--reuse-window\0")
+                .as_bytes(),
+        );
+        assert!(linux_antigravity_external_runtime_matches_expected_launch(&main, &launcher));
+
+        let cli = linux_proc_cmdline_args(
+            format!("/usr/lib/electron39/electron\0{app}/resources/app/out/cli.js\0").as_bytes(),
+        );
+        assert!(!linux_antigravity_external_runtime_matches_expected_launch(&cli, &launcher));
+        let other = linux_proc_cmdline_args(
+            b"/usr/lib/electron39/electron\0/opt/other/resources/app/antigravity-ide.js\0",
+        );
+        assert!(!linux_antigravity_external_runtime_matches_expected_launch(&other, &launcher));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn proc_argv_preserves_spaces_in_runtime_and_profile_paths() {
         let args = linux_proc_cmdline_args(
             b"/usr/bin/electron\0--app=/opt/Antigravity IDE/resources/app.asar\0--user-data-dir=/work/profiles/managed profile\0",

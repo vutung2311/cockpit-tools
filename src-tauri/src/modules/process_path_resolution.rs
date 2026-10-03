@@ -3965,6 +3965,49 @@ fn linux_antigravity_launcher_signature_from_tokens(
     false
 }
 
+/// True for `<app_root>/resources/app/<entry>.js` where `app_root` is the configured install
+/// root, or contains an `antigravity-ide` launcher that resolves to the configured launcher
+/// (the packaged layout symlinks /opt/antigravity-ide/antigravity-ide to /usr/bin/antigravity-ide).
+/// Only a script sitting directly in resources/app qualifies, so extension binaries and the
+/// short-lived out/cli.js wrapper are not mistaken for the main process.
+#[cfg(any(target_os = "linux", test))]
+fn linux_antigravity_entry_script_belongs_to_launch(
+    token: &str,
+    expected_launch: &str,
+    expected_root: &str,
+) -> bool {
+    let script = Path::new(token);
+    if script.extension().map_or(true, |ext| !ext.eq_ignore_ascii_case("js")) {
+        return false;
+    }
+    let Some(app_dir) = script.parent() else {
+        return false;
+    };
+    let Some(resources_dir) = app_dir.parent() else {
+        return false;
+    };
+    if !app_dir.file_name().is_some_and(|name| name.eq_ignore_ascii_case("app"))
+        || !resources_dir
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("resources"))
+    {
+        return false;
+    }
+    let Some(app_root) = resources_dir.parent() else {
+        return false;
+    };
+    if normalize_path_for_compare(&app_root.to_string_lossy()) == expected_root {
+        return true;
+    }
+    let Ok(expected_real) = std::fs::canonicalize(expected_launch) else {
+        return false;
+    };
+    ["antigravity-ide", "bin/antigravity-ide"]
+        .iter()
+        .filter_map(|relative| std::fs::canonicalize(app_root.join(relative)).ok())
+        .any(|launcher| launcher == expected_real)
+}
+
 #[cfg(any(target_os = "linux", test))]
 fn linux_antigravity_external_runtime_matches_expected_launch(
     tokens: &[String],
@@ -3982,6 +4025,14 @@ fn linux_antigravity_external_runtime_matches_expected_launch(
     let expected_root = normalize_path_for_compare(&expected_root.to_string_lossy());
     if expected_root.is_empty() {
         return false;
+    }
+
+    // Distro packages (e.g. Arch's antigravity-ide) start the system Electron with the
+    // app's entry script instead of --app: `electron /opt/antigravity-ide/resources/app/antigravity-ide.js`.
+    if tokens.iter().any(|token| {
+        linux_antigravity_entry_script_belongs_to_launch(token, &expected_launch, &expected_root)
+    }) {
+        return true;
     }
 
     let mut index = 0;
