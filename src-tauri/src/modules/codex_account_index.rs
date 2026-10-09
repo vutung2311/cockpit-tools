@@ -427,13 +427,6 @@ fn repair_account_index_from_details_with_previous(
                 .collect()
         })
         .unwrap_or_default();
-    logger::log_warn(&format!(
-        "[Codex Account][Repair] 检测到索引异常，开始按详情文件重建: reason={}, index_path={}, accounts_dir={}",
-        reason,
-        index_path.display(),
-        accounts_dir.display()
-    ));
-
     let detail_ids = match collect_account_detail_file_ids() {
         Ok(ids) => ids,
         Err(err) => {
@@ -448,13 +441,15 @@ fn repair_account_index_from_details_with_previous(
     };
 
     if detail_ids.is_empty() {
-        logger::log_warn(&format!(
-            "[Codex Account][Repair] 账号详情目录中未发现可恢复账号，放弃自动修复: reason={}, accounts_dir={}",
-            reason,
-            accounts_dir.display()
-        ));
         return None;
     }
+
+    logger::log_warn(&format!(
+        "[Codex Account][Repair] 检测到索引异常，开始按详情文件重建: reason={}, index_path={}, accounts_dir={}",
+        reason,
+        index_path.display(),
+        accounts_dir.display()
+    ));
 
     let mut account_ids: Vec<String> = detail_ids.into_iter().collect();
     account_ids.sort();
