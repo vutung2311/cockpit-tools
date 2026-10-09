@@ -448,13 +448,6 @@ pub fn save_account_index(index: &CodexAccountIndex) -> Result<(), String> {
 fn repair_account_index_from_details(reason: &str, revision: Option<u64>) -> Option<CodexAccountIndex> {
     let index_path = get_accounts_storage_path();
     let accounts_dir = get_accounts_dir();
-    logger::log_warn(&format!(
-        "[Codex Account][Repair] 检测到索引异常，开始按详情文件重建: reason={}, index_path={}, accounts_dir={}",
-        reason,
-        index_path.display(),
-        accounts_dir.display()
-    ));
-
     let mut accounts = match crate::modules::account_index_repair::load_accounts_from_details(
         &accounts_dir,
         |account_id| load_account(account_id),
@@ -472,13 +465,15 @@ fn repair_account_index_from_details(reason: &str, revision: Option<u64>) -> Opt
     };
 
     if accounts.is_empty() {
-        logger::log_warn(&format!(
-            "[Codex Account][Repair] 账号详情目录中未发现可恢复账号，放弃自动修复: reason={}, accounts_dir={}",
-            reason,
-            accounts_dir.display()
-        ));
         return None;
     }
+
+    logger::log_warn(&format!(
+        "[Codex Account][Repair] 检测到索引异常，开始按详情文件重建: reason={}, index_path={}, accounts_dir={}",
+        reason,
+        index_path.display(),
+        accounts_dir.display()
+    ));
 
     logger::log_info(&format!(
         "[Codex Account][Repair] 已扫描到 {} 个账号详情，准备重建索引",
