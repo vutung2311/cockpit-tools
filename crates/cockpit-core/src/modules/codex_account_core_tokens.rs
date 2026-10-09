@@ -382,10 +382,28 @@ pub fn extract_user_info(
     Ok((email, user_id, plan_type, account_id, organization_id))
 }
 
+fn has_account_detail_files() -> bool {
+    let accounts_dir = get_accounts_dir();
+    if !accounts_dir.exists() {
+        return false;
+    }
+    fs::read_dir(&accounts_dir)
+        .map(|entries| {
+            entries.filter_map(Result::ok).any(|e| {
+                let p = e.path();
+                p.is_file() && p.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("json"))
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// 读取账号索引
 pub fn load_account_index() -> CodexAccountIndex {
     let path = get_accounts_storage_path();
     if !path.exists() {
+        if !has_account_detail_files() {
+            return CodexAccountIndex::new();
+        }
         return repair_account_index_from_details("索引文件不存在")
             .unwrap_or_else(CodexAccountIndex::new);
     }
@@ -415,10 +433,9 @@ pub fn load_account_index() -> CodexAccountIndex {
 fn load_account_index_checked() -> Result<CodexAccountIndex, String> {
     let path = get_accounts_storage_path();
     if !path.exists() {
-        logger::log_warn(&format!(
-            "[Codex Account][Repair] 检测到账号索引文件不存在，准备尝试自动修复: path={}",
-            path.display()
-        ));
+        if !has_account_detail_files() {
+            return Ok(CodexAccountIndex::new());
+        }
         if let Some(index) = repair_account_index_from_details("索引文件不存在") {
             logger::log_info(&format!(
                 "[Codex Account][Repair] 索引文件不存在，已自动修复完成: recovered_accounts={}",
@@ -426,9 +443,6 @@ fn load_account_index_checked() -> Result<CodexAccountIndex, String> {
             ));
             return Ok(index);
         }
-        logger::log_warn(
-            "[Codex Account][Repair] 索引文件不存在，但未找到可恢复详情文件，返回空索引",
-        );
         return Ok(CodexAccountIndex::new());
     }
 
@@ -518,13 +532,6 @@ pub fn save_account_index(index: &CodexAccountIndex) -> Result<(), String> {
 fn repair_account_index_from_details(reason: &str) -> Option<CodexAccountIndex> {
     let index_path = get_accounts_storage_path();
     let accounts_dir = get_accounts_dir();
-    logger::log_warn(&format!(
-        "[Codex Account][Repair] 检测到索引异常，开始按详情文件重建: reason={}, index_path={}, accounts_dir={}",
-        reason,
-        index_path.display(),
-        accounts_dir.display()
-    ));
-
     let mut accounts = match crate::modules::account_index_repair::load_accounts_from_details(
         &accounts_dir,
         |account_id| load_account(account_id),
@@ -542,13 +549,15 @@ fn repair_account_index_from_details(reason: &str) -> Option<CodexAccountIndex> 
     };
 
     if accounts.is_empty() {
-        logger::log_warn(&format!(
-            "[Codex Account][Repair] 账号详情目录中未发现可恢复账号，放弃自动修复: reason={}, accounts_dir={}",
-            reason,
-            accounts_dir.display()
-        ));
         return None;
     }
+
+    logger::log_warn(&format!(
+        "[Codex Account][Repair] 检测到索引异常，开始按详情文件重建: reason={}, index_path={}, accounts_dir={}",
+        reason,
+        index_path.display(),
+        accounts_dir.display()
+    ));
 
     logger::log_info(&format!(
         "[Codex Account][Repair] 已扫描到 {} 个账号详情，准备重建索引",

@@ -146,6 +146,20 @@ mod linux_antigravity_path_tests {
     }
 
     #[test]
+    fn extension_and_language_server_binaries_are_rejected() {
+        let install = PathTestDir::new("lsp-extension-reject");
+        let lsp = install
+            .path()
+            .join("resources/app/extensions/antigravity/bin/language_server_linux_x64");
+        write_executable(&lsp);
+        assert!(resolve_linux_antigravity_exec_path(&lsp).is_err());
+
+        let cli = install.path().join("resources/app/out/cli.js");
+        write_executable(&cli);
+        assert!(resolve_linux_antigravity_exec_path(&cli).is_err());
+    }
+
+    #[test]
     fn directory_without_supported_executable_is_rejected() {
         let install = PathTestDir::new("empty-layout");
 
@@ -614,13 +628,29 @@ fn find_antigravity_process_exe() -> Option<std::path::PathBuf> {
                 || name.contains("utility")
                 || name.contains("audio")
                 || name.contains("sandbox")
+                || name.contains("language_server")
+                || exe_path.contains("language_server")
+                || exe_path.contains("/extensions/")
                 || exe_path.contains("crashpad");
 
             #[cfg(target_os = "windows")]
             let is_antigravity = is_windows_antigravity_ide_main_executable(&name, &exe_path);
             #[cfg(target_os = "linux")]
-            let is_antigravity = (name.contains("antigravity-ide")
-                || exe_path.contains("/antigravity-ide"))
+            if !is_helper && args_str.contains("resources/app/antigravity-ide.js") {
+                if let Some(launcher) = first_linux_antigravity_executable(
+                    linux_antigravity_discovery_paths(
+                        dirs::home_dir().as_deref(),
+                        std::env::var_os("PATH").as_deref(),
+                    ),
+                ) {
+                    return Some(launcher);
+                }
+            }
+            #[cfg(target_os = "linux")]
+            let is_antigravity = (name == "antigravity-ide"
+                || name == "antigravity"
+                || exe_path.ends_with("/antigravity-ide")
+                || exe_path.ends_with("/antigravity"))
                 && !name.contains("tools")
                 && !exe_path.contains("tools");
 
@@ -887,6 +917,17 @@ fn is_linux_executable_file(path: &Path) -> bool {
 #[cfg(any(target_os = "linux", test))]
 fn resolve_linux_antigravity_exec_path(path: &Path) -> Result<std::path::PathBuf, String> {
     if path.is_file() {
+        let path_str = path.to_string_lossy();
+        if path_str.contains("/extensions/")
+            || path_str.contains("language_server")
+            || path_str.ends_with("/out/cli.js")
+            || path_str.ends_with("/cli.js")
+        {
+            return Err(format!(
+                "Linux Antigravity path points to an extension or CLI helper, not the IDE launcher: {}",
+                path.display()
+            ));
+        }
         if is_linux_executable_file(path) {
             return Ok(path.to_path_buf());
         }
@@ -3683,6 +3724,58 @@ fn linux_antigravity_launcher_signature_from_tokens(
     false
 }
 
+/// True for `<app_root>/resources/app/<entry>.js` where `app_root` is the configured install
+/// root, or contains an `antigravity-ide` launcher that resolves to the configured launcher
+/// (the packaged layout symlinks /opt/antigravity-ide/antigravity-ide to /usr/bin/antigravity-ide).
+/// Only a script sitting directly in resources/app qualifies, so extension binaries and the
+/// short-lived out/cli.js wrapper are not mistaken for the main process.
+#[cfg(any(target_os = "linux", test))]
+fn linux_antigravity_entry_script_belongs_to_launch(
+    token: &str,
+    expected_launch: &str,
+    expected_root: &str,
+) -> bool {
+    let script = Path::new(token);
+    if script.extension().map_or(true, |ext| !ext.eq_ignore_ascii_case("js")) {
+        return false;
+    }
+    let Some(app_dir) = script.parent() else {
+        return false;
+    };
+    let Some(resources_dir) = app_dir.parent() else {
+        return false;
+    };
+    if !app_dir.file_name().is_some_and(|name| name.eq_ignore_ascii_case("app"))
+        || !resources_dir
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("resources"))
+    {
+        return false;
+    }
+    let Some(app_root) = resources_dir.parent() else {
+        return false;
+    };
+    if normalize_path_for_compare(&app_root.to_string_lossy()) == expected_root {
+        return true;
+    }
+    let Ok(expected_real) = std::fs::canonicalize(expected_launch) else {
+        return false;
+    };
+    if ["antigravity-ide", "bin/antigravity-ide"]
+        .iter()
+        .filter_map(|relative| std::fs::canonicalize(app_root.join(relative)).ok())
+        .any(|launcher| launcher == expected_real)
+    {
+        return true;
+    }
+    if let Ok(expected_contents) = std::fs::read_to_string(&expected_real) {
+        if expected_contents.contains(&app_root.to_string_lossy().as_ref()) {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(any(target_os = "linux", test))]
 fn linux_antigravity_external_runtime_matches_expected_launch(
     tokens: &[String],
@@ -3700,6 +3793,14 @@ fn linux_antigravity_external_runtime_matches_expected_launch(
     let expected_root = normalize_path_for_compare(&expected_root.to_string_lossy());
     if expected_root.is_empty() {
         return false;
+    }
+
+    // Distro packages (e.g. Arch's antigravity-ide) start the system Electron with the
+    // app's entry script instead of --app: `electron /opt/antigravity-ide/resources/app/antigravity-ide.js`.
+    if tokens.iter().any(|token| {
+        linux_antigravity_entry_script_belongs_to_launch(token, &expected_launch, &expected_root)
+    }) {
+        return true;
     }
 
     let mut index = 0;
@@ -3743,6 +3844,17 @@ fn is_linux_antigravity_process_candidate_from_tokens(
     exe_path_lower: &str,
     expected_executable_match: bool,
 ) -> bool {
+    if exe_path_lower.contains("language_server")
+        || exe_path_lower.contains("/extensions/")
+        || tokens.iter().any(|token| {
+            let lower = token.to_ascii_lowercase();
+            lower.contains("language_server")
+                || lower.contains("/resources/app/extensions/")
+                || lower.contains("\\resources\\app\\extensions\\")
+        })
+    {
+        return false;
+    }
     if !expected_executable_match
         && !linux_antigravity_launcher_signature_from_tokens(tokens, exe_path_lower)
     {

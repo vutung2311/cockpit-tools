@@ -874,6 +874,97 @@ fn close_pids(pids: &[u32], timeout_secs: u64) -> Result<(), String> {
     }
 }
 
+fn send_force_close_signal(pid: u32) -> Option<String> {
+    if pid == 0 || !is_pid_running(pid) {
+        return None;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return send_close_signal(pid);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let result = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
+        return match result {
+            Ok(output) if output.status.success() => None,
+            Ok(output) => Some(format_kill_command_failure(
+                pid,
+                "kill -9",
+                output.status,
+                &output.stderr,
+                &output.stdout,
+            )),
+            Err(error) => Some(format!("pid {}: kill -9 failed: {}", pid, error)),
+        };
+    }
+}
+
+fn force_close_pids(pids: &[u32], timeout_secs: u64) -> Result<(), String> {
+    if pids.is_empty() {
+        return Ok(());
+    }
+    let mut targets: Vec<u32> = pids
+        .iter()
+        .copied()
+        .filter(|pid| *pid != 0 && is_pid_running(*pid))
+        .collect();
+    targets.sort();
+    targets.dedup();
+    if targets.is_empty() {
+        return Ok(());
+    }
+    crate::modules::logger::log_info(&format!(
+        "[ForceClosePids] targets={}, timeout_secs={}",
+        summarize_pid_list_for_log(&targets),
+        timeout_secs
+    ));
+
+    let close_errors = targets
+        .iter()
+        .filter_map(|pid| send_force_close_signal(*pid))
+        .collect::<Vec<_>>();
+
+    if wait_pids_exit(&targets, timeout_secs) {
+        crate::modules::logger::log_info(&format!(
+            "[ForceClosePids] all exited, targets={}",
+            summarize_pid_list_for_log(&targets)
+        ));
+        Ok(())
+    } else {
+        let remaining: Vec<u32> = targets
+            .iter()
+            .copied()
+            .filter(|pid| is_pid_running(*pid))
+            .collect();
+        crate::modules::logger::log_error(&format!(
+            "[ForceClosePids] timeout, remaining={}",
+            summarize_pid_list_for_log(&remaining)
+        ));
+        let original_reason = if close_errors.is_empty() {
+            format!(
+                "目标进程在强制退出后仍在运行: pids={}",
+                summarize_pid_list_for_log(&remaining)
+            )
+        } else {
+            close_errors.join(" | ")
+        };
+        Err(crate::modules::windows_operation::format_error(
+            "stop_process",
+            "无法强制关闭实例进程",
+            &original_reason,
+            None,
+            &remaining,
+            true,
+            true,
+            true,
+        ))
+    }
+}
+
 fn is_legacy_platform_adapter_executable(executable: &str) -> bool {
     let executable = executable.trim();
     if executable.is_empty()

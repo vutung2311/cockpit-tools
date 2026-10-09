@@ -71,6 +71,48 @@ mod linux_antigravity_process_candidate_tests {
     }
 
     #[test]
+    fn packaged_entry_script_matches_launcher_symlinked_into_the_app_dir() {
+        let root = std::env::temp_dir().join(format!("ag-entry-script-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let app = root.join("opt/antigravity-ide");
+        std::fs::create_dir_all(app.join("resources/app/extensions")).unwrap();
+        std::fs::create_dir_all(root.join("usr/bin")).unwrap();
+        let launcher = root.join("usr/bin/antigravity-ide");
+        std::fs::write(&launcher, "#!/bin/sh\n").unwrap();
+        std::os::unix::fs::symlink(&launcher, app.join("antigravity-ide")).unwrap();
+        let launcher = launcher.to_string_lossy().into_owned();
+        let app = app.to_string_lossy().into_owned();
+
+        let main = linux_proc_cmdline_args(
+            format!("/usr/lib/electron39/electron\0{app}/resources/app/antigravity-ide.js\0--reuse-window\0")
+                .as_bytes(),
+        );
+        assert!(linux_antigravity_external_runtime_matches_expected_launch(&main, &launcher));
+
+        let cli = linux_proc_cmdline_args(
+            format!("/usr/lib/electron39/electron\0{app}/resources/app/out/cli.js\0").as_bytes(),
+        );
+        assert!(!linux_antigravity_external_runtime_matches_expected_launch(&cli, &launcher));
+        let other = linux_proc_cmdline_args(
+            b"/usr/lib/electron39/electron\0/opt/other/resources/app/antigravity-ide.js\0",
+        );
+        assert!(!linux_antigravity_external_runtime_matches_expected_launch(&other, &launcher));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn language_server_processes_are_rejected_as_ide_candidates() {
+        let lsp_args = linux_proc_cmdline_args(
+            b"/opt/antigravity-ide/resources/app/extensions/antigravity/bin/language_server_linux_x64\0--enable_lsp\0",
+        );
+        assert!(!is_linux_antigravity_process_candidate_from_tokens(
+            &lsp_args,
+            "/opt/antigravity-ide/resources/app/extensions/antigravity/bin/language_server_linux_x64",
+            false,
+        ));
+    }
+
+    #[test]
     fn proc_argv_preserves_spaces_in_runtime_and_profile_paths() {
         let args = linux_proc_cmdline_args(
             b"/usr/bin/electron\0--app=/opt/Antigravity IDE/resources/app.asar\0--user-data-dir=/work/profiles/managed profile\0",
@@ -3704,9 +3746,9 @@ where
                 log_prefix,
                 summarize_pid_list_for_log(&remaining_pids)
             ));
-            if let Err(err) = close_pids(&remaining_pids, 6) {
+            if let Err(err) = force_close_pids(&remaining_pids, 6) {
                 crate::modules::logger::log_warn(&format!(
-                    "[{}] retry close_pids returned error: {}",
+                    "[{}] retry force_close_pids returned error: {}",
                     log_prefix, err
                 ));
             }
