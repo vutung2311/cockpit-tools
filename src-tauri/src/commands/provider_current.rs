@@ -57,11 +57,10 @@ fn resolve_provider_current_account_id(platform: &str) -> Result<Option<String>,
 
 #[tauri::command]
 pub async fn get_provider_current_account_id(
-    app: AppHandle,
+    _app: AppHandle,
     platform: String,
 ) -> Result<Option<String>, String> {
     let current_account_id = resolve_provider_current_account_id(platform.trim())?;
-    let _ = crate::modules::tray::update_tray_menu(&app);
     Ok(current_account_id)
 }
 

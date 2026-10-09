@@ -1764,6 +1764,48 @@ wire_api = "responses"
     }
 
     #[test]
+    fn codex_clean_install_empty_state_does_not_trigger_repair_or_warn() {
+        let _lock = crate::modules::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _env = TestEnvGuard::new("clean-install-empty-state");
+
+        let index_path = get_accounts_storage_path();
+        let accounts_dir = get_accounts_dir();
+        assert!(!index_path.exists());
+        if accounts_dir.exists() {
+            let _ = fs::remove_dir_all(&accounts_dir);
+        }
+        assert!(!accounts_dir.exists());
+
+        let index = load_account_index();
+        assert!(index.accounts.is_empty());
+        assert_eq!(index.current_account_id, None);
+
+        let checked = load_account_index_checked().expect("clean install without accounts dir should return Ok");
+        assert!(checked.accounts.is_empty());
+        assert_eq!(checked.current_account_id, None);
+
+        let repair_res = super::repair_account_index_from_details("索引文件不存在");
+        assert!(repair_res.is_none());
+
+        // Now test when accounts_dir exists but is empty
+        fs::create_dir_all(&accounts_dir).unwrap();
+        assert!(accounts_dir.exists());
+        assert!(super::collect_account_detail_file_ids().unwrap().is_empty());
+
+        let index2 = load_account_index();
+        assert!(index2.accounts.is_empty());
+        assert_eq!(index2.current_account_id, None);
+
+        let checked2 = load_account_index_checked().expect("empty accounts dir should return Ok");
+        assert!(checked2.accounts.is_empty());
+        assert_eq!(checked2.current_account_id, None);
+
+        assert!(super::repair_account_index_from_details("索引文件不存在").is_none());
+    }
+
+    #[test]
     fn codex_group_quota_policy_defaults_to_inherit() {
         let groups: Vec<CodexAccountGroupRecord> =
             serde_json::from_str(r#"[{"accountIds":["a1"]}]"#).expect("parse");
