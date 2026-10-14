@@ -855,6 +855,84 @@ fn collect_antigravity_process_entries_from_proc(
     result
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn collect_antigravity_legacy_process_entries_from_proc(
+    expected_launch: &str,
+) -> Vec<(u32, Option<String>)> {
+    let mut result = Vec::new();
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(value) => value,
+        Err(_) => return result,
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let pid_str = file_name.to_string_lossy();
+        if !pid_str.chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        let pid = match pid_str.parse::<u32>() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let cmdline_path = format!("/proc/{}/cmdline", pid);
+        let cmdline = match std::fs::read(&cmdline_path) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let args = linux_proc_cmdline_args(&cmdline);
+        if args.is_empty() {
+            continue;
+        }
+        let exe_path = std::fs::read_link(format!("/proc/{}/exe", pid))
+            .ok()
+            .and_then(|path| path.to_str().map(str::to_string))
+            .unwrap_or_default();
+        let exe_path_lower = exe_path.to_lowercase();
+        let expected_executable_match =
+            !exe_path.is_empty() && normalize_path_for_compare(expected_launch) == normalize_path_for_compare(&exe_path);
+        if !is_linux_antigravity_legacy_process_candidate_from_tokens(
+            &args,
+            &exe_path_lower,
+            expected_executable_match,
+        ) {
+            continue;
+        }
+        let dir = extract_user_data_dir_from_tokens(&args);
+        result.push((pid, dir));
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = linux_antigravity_legacy_singleton_lock_owner() {
+        if !result.iter().any(|(p, _)| *p == pid) {
+            result.push((pid, None));
+        }
+    }
+
+    result
+}
+
+/// 兜底：通过默认目录的 SingletonLock 找到主进程（应对未识别的打包方式）。
+/// 锁可能是崩溃遗留、PID 已被复用，因此要求主机名一致、进程仍在运行、
+/// 命令行属于独立版 Antigravity 且不是 Chromium 辅助进程，否则不返回。
+#[cfg(target_os = "linux")]
+fn linux_antigravity_legacy_singleton_lock_owner() -> Option<u32> {
+    let user_data_dir = crate::modules::antigravity_paths::legacy_default_user_data_dir().ok()?;
+    let target = std::fs::read_link(user_data_dir.join("SingletonLock")).ok()?;
+    let target = target.to_string_lossy().to_string();
+    let (host, pid) = parse_chromium_singleton_lock_target(&target)?;
+    if current_hostname()? != host || !is_pid_running(pid) {
+        return None;
+    }
+    if !singleton_lock_owner_is_antigravity(pid) {
+        return None;
+    }
+    let cmdline = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
+    if is_linux_chromium_helper_tokens(&linux_proc_cmdline_args(&cmdline)) {
+        return None;
+    }
+    Some(pid)
+}
+
 #[cfg(target_os = "linux")]
 fn read_linux_process_entry(
     pid: u32,
@@ -1143,18 +1221,7 @@ pub fn collect_antigravity_legacy_process_entries() -> Vec<(u32, Option<String>)
         let expected = expected_launch
             .as_deref()
             .expect("expected launch path must exist");
-        let entries = collect_antigravity_process_entries_from_proc(expected)
-            .into_iter()
-            .filter(|(_, dir)| {
-                dir.as_deref()
-                    .is_some_and(|value| value.contains("Antigravity"))
-            })
-            .collect::<Vec<_>>();
-        return filter_antigravity_entries_by_expected_launch_path(
-            "AG Legacy",
-            entries,
-            expected_launch,
-        );
+        return collect_antigravity_legacy_process_entries_from_proc(expected);
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
