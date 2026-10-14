@@ -1,7 +1,7 @@
 use crate::error::{AppError, AppResult};
 use crate::models;
 use crate::modules;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::AppHandle;
 use tauri::Emitter;
@@ -162,6 +162,51 @@ fn legacy_antigravity_state_db_path() -> Result<PathBuf, String> {
         }
     }
     Ok(path)
+}
+
+/// 合并 Antigravity 2.x app_storage.json 中的登录账号字段（值均为字符串，与客户端格式一致）。
+/// 解析失败或根节点不是对象时返回错误，绝不覆盖用户原有内容。
+fn merge_antigravity_app_storage(
+    content: &str,
+    email: &str,
+    is_gcp_tos: bool,
+) -> Result<String, String> {
+    let mut json = serde_json::from_str::<serde_json::Value>(content)
+        .map_err(|e| format!("解析 app_storage.json 失败: {}", e))?;
+    let obj = json
+        .as_object_mut()
+        .ok_or("app_storage.json 根节点不是对象")?;
+    obj.insert(
+        "jetski.onboarding.lastLoginUsername".to_string(),
+        serde_json::Value::String(email.to_string()),
+    );
+    obj.insert(
+        "jetski.onboarding.lastLoginIsGcpTos".to_string(),
+        serde_json::Value::String(is_gcp_tos.to_string()),
+    );
+    serde_json::to_string_pretty(&json).map_err(|e| format!("序列化 app_storage.json 失败: {}", e))
+}
+
+fn update_antigravity_app_storage(user_data_dir: &Path, account: &models::Account) {
+    let storage_path = user_data_dir.join("app_storage.json");
+    // 文件不存在时不主动创建：客户端首次启动会自行生成，且其余字段我们无法得知，
+    // 此时登录账号以系统凭据 / state.vscdb 为准
+    if !storage_path.exists() {
+        modules::logger::log_info("[Antigravity] app_storage.json 不存在，跳过登录账号同步");
+        return;
+    }
+    // 与 state.vscdb 注入保持同一来源（token 优先，其次配额信息）
+    let is_gcp_tos = modules::db::resolve_account_is_gcp_tos(account).unwrap_or(false);
+    let result = modules::atomic_write::update_string_atomic(&storage_path, |current| {
+        let current = current.ok_or("app_storage.json 已被删除")?;
+        merge_antigravity_app_storage(current, &account.email, is_gcp_tos)
+    });
+    if let Err(e) = result {
+        modules::logger::log_warn(&format!(
+            "[Antigravity] 同步 app_storage.json 登录账号失败 (非致命): {}",
+            e
+        ));
+    }
 }
 
 #[tauri::command]
@@ -820,9 +865,30 @@ pub async fn save_platform_account_groups(platform: String, data: String) -> Res
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_antigravity_runtime_target, resolve_antigravity_switch_flow,
-        validate_account_groups_payload, AntigravityRuntimeTarget, AntigravitySwitchFlow,
+        merge_antigravity_app_storage, normalize_antigravity_runtime_target,
+        resolve_antigravity_switch_flow, validate_account_groups_payload, AntigravityRuntimeTarget,
+        AntigravitySwitchFlow,
     };
+
+    #[test]
+    fn app_storage_merge_sets_login_fields_and_keeps_others() {
+        let original = r#"{"ide-install-wizard-shown":"true","jetski.onboarding.lastLoginUsername":"old@example.com"}"#;
+        let merged = merge_antigravity_app_storage(original, "new@example.com", true)
+            .expect("merge app storage");
+        let json: serde_json::Value = serde_json::from_str(&merged).expect("valid json");
+        assert_eq!(json["ide-install-wizard-shown"], "true");
+        assert_eq!(
+            json["jetski.onboarding.lastLoginUsername"],
+            "new@example.com"
+        );
+        assert_eq!(json["jetski.onboarding.lastLoginIsGcpTos"], "true");
+    }
+
+    #[test]
+    fn app_storage_merge_refuses_invalid_content() {
+        assert!(merge_antigravity_app_storage("{not json", "a@example.com", false).is_err());
+        assert!(merge_antigravity_app_storage("[]", "a@example.com", false).is_err());
+    }
 
     #[test]
     fn account_groups_payload_must_be_a_json_array() {

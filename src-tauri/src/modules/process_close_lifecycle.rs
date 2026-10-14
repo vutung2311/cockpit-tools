@@ -104,6 +104,190 @@ pub fn close_antigravity_legacy_instances(
     )
 }
 
+/// Linux 独立版 Antigravity 的后台进程（language_server / webm_encoder）不随主窗口退出，
+/// 且持有旧账号凭据；切换账号时需在主窗口关闭后一并结束。绝不匹配 Antigravity IDE。
+#[cfg(any(target_os = "linux", test))]
+fn is_linux_antigravity_legacy_background_process_from_tokens(
+    tokens: &[String],
+    exe_path_lower: &str,
+) -> bool {
+    let program_lower = if exe_path_lower.is_empty() {
+        match tokens.first() {
+            Some(first) => first.to_ascii_lowercase(),
+            None => return false,
+        }
+    } else {
+        exe_path_lower.to_string()
+    };
+    let is_ide =
+        |value: &str| value.contains("antigravity-ide") || value.contains("antigravity ide");
+    if is_ide(&program_lower)
+        || tokens
+            .iter()
+            .any(|token| is_ide(&token.to_ascii_lowercase()))
+    {
+        return false;
+    }
+    let file_name = program_lower.rsplit('/').next().unwrap_or_default();
+    let is_background_binary = file_name == "language_server"
+        || file_name.starts_with("language_server_")
+        || file_name == "webm_encoder";
+    is_background_binary
+        && program_lower.contains("antigravity")
+        && program_lower.contains("/resources/bin/")
+}
+
+/// 结束独立版 Antigravity 残留的后台进程（仅 Linux；其他平台无操作）。
+pub fn close_antigravity_legacy_background_processes(timeout_secs: u64) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let current_uid = unsafe { libc::getuid() };
+        let mut pids = Vec::new();
+        if let Ok(entries) = std::fs::read_dir("/proc") {
+            for entry in entries.flatten() {
+                let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                    continue;
+                };
+                if pid == std::process::id() {
+                    continue;
+                }
+                if !entry.metadata().is_ok_and(|meta| meta.uid() == current_uid) {
+                    continue;
+                }
+                let Ok(cmdline) = std::fs::read(format!("/proc/{}/cmdline", pid)) else {
+                    continue;
+                };
+                let args = linux_proc_cmdline_args(&cmdline);
+                let exe_path_lower = std::fs::read_link(format!("/proc/{}/exe", pid))
+                    .map(|path| path.to_string_lossy().to_ascii_lowercase())
+                    .unwrap_or_default();
+                if is_linux_antigravity_legacy_background_process_from_tokens(
+                    &args,
+                    &exe_path_lower,
+                ) {
+                    pids.push(pid);
+                }
+            }
+        }
+        if pids.is_empty() {
+            return Ok(());
+        }
+
+        crate::modules::logger::log_info(&format!(
+            "[AG Legacy Close] 结束残留后台进程: {:?}",
+            pids
+        ));
+        for pid in &pids {
+            let _ = send_close_signal(*pid);
+        }
+        if wait_pids_exit(&pids, timeout_secs) {
+            return Ok(());
+        }
+        let survivors: Vec<u32> = pids
+            .iter()
+            .copied()
+            .filter(|pid| is_pid_running(*pid))
+            .collect();
+        for pid in &survivors {
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+        }
+        if wait_pids_exit(&survivors, 2) {
+            return Ok(());
+        }
+        return Err(format!(
+            "无法结束 Antigravity 后台进程 {:?}，请手动关闭后重试",
+            survivors
+        ));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = timeout_secs;
+        Ok(())
+    }
+}
+
+/// 解析 Chromium SingletonLock 链接目标 `<hostname>-<pid>`。
+#[cfg(any(unix, test))]
+fn parse_chromium_singleton_lock_target(target: &str) -> Option<(&str, u32)> {
+    let (host, pid) = target.rsplit_once('-')?;
+    let pid = pid.parse::<u32>().ok().filter(|pid| *pid != 0)?;
+    Some((host, pid))
+}
+
+#[cfg(unix)]
+fn current_hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    let result = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if result != 0 {
+        return None;
+    }
+    let len = buf.iter().position(|byte| *byte == 0).unwrap_or(buf.len());
+    Some(String::from_utf8_lossy(&buf[..len]).into_owned())
+}
+
+#[cfg(unix)]
+fn singleton_lock_owner_is_antigravity(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // 防止 PID 复用：仅当进程命令行确实属于独立版 Antigravity 时才视为占用
+        let Ok(cmdline) = std::fs::read(format!("/proc/{}/cmdline", pid)) else {
+            return false;
+        };
+        let joined = linux_proc_cmdline_args(&cmdline)
+            .join(" ")
+            .to_ascii_lowercase();
+        joined.contains("antigravity")
+            && !joined.contains("antigravity-ide")
+            && !joined.contains("antigravity ide")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+/// 启动前清理 Antigravity 默认目录的 Chromium 单例锁。
+/// 仅当锁的持有进程已退出时才删除；若持有进程仍在运行（说明关闭阶段未识别到它），
+/// 返回错误而不是删除锁，避免两个实例共用同一 profile、旧窗口继续使用旧账号。
+pub fn clear_stale_antigravity_singleton_lock(user_data_dir: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let lock_path = user_data_dir.join("SingletonLock");
+        if let Ok(target) = std::fs::read_link(&lock_path) {
+            let target = target.to_string_lossy().to_string();
+            if let Some((host, pid)) = parse_chromium_singleton_lock_target(&target) {
+                if current_hostname().is_some_and(|current| current != host) {
+                    crate::modules::logger::log_warn(&format!(
+                        "[AG Legacy] SingletonLock 属于其他主机 ({})，保留锁文件",
+                        host
+                    ));
+                    return Ok(());
+                }
+                if is_pid_running(pid) && singleton_lock_owner_is_antigravity(pid) {
+                    return Err(format!(
+                        "Antigravity 仍在运行 (pid {})，无法切换账号，请手动关闭后重试",
+                        pid
+                    ));
+                }
+            }
+        }
+        for name in ["SingletonLock", "SingletonCookie", "SingletonSocket"] {
+            let _ = std::fs::remove_file(user_data_dir.join(name));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = user_data_dir;
+        Ok(())
+    }
+}
+
 fn close_user_data_dir_scoped_instances(
     log_prefix: &str,
     process_display_name: &str,
@@ -1501,7 +1685,6 @@ pub fn start_antigravity_legacy_with_args(
             cmd.arg("--user-data-dir");
             cmd.arg(user_data_dir.trim());
         }
-        cmd.arg("--reuse-window");
         for arg in extra_args {
             if !arg.trim().is_empty() {
                 cmd.arg(arg);

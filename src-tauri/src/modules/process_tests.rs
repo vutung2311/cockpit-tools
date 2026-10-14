@@ -1393,3 +1393,183 @@ mod managed_proxy_env_tests {
         }
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_antigravity_legacy_probe_tests {
+    use super::*;
+
+    #[test]
+    fn collect_antigravity_legacy_process_entries_distinguishes_instances() {
+        let entries = collect_antigravity_legacy_process_entries();
+        // None of the collected entries should belong to Antigravity IDE
+        for (pid, _) in &entries {
+            if let Ok(cmdline) = std::fs::read(format!("/proc/{}/cmdline", pid)) {
+                let args = linux_proc_cmdline_args(&cmdline);
+                let full = args.join(" ").to_ascii_lowercase();
+                assert!(
+                    !full.contains("antigravity-ide") && !full.contains("antigravity ide"),
+                    "Collected PID {} belongs to Antigravity IDE: {}",
+                    pid,
+                    full
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod antigravity_legacy_switch_cleanup_tests {
+    use super::*;
+
+    fn tokens(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn background_process_matches_standalone_language_server_and_encoder() {
+        assert!(is_linux_antigravity_legacy_background_process_from_tokens(
+            &tokens(&[
+                "/opt/antigravity/resources/bin/language_server",
+                "--standalone",
+            ]),
+            "/opt/antigravity/resources/bin/language_server",
+        ));
+        assert!(is_linux_antigravity_legacy_background_process_from_tokens(
+            &tokens(&["/opt/antigravity/resources/bin/webm_encoder"]),
+            "",
+        ));
+    }
+
+    #[test]
+    fn background_process_rejects_ide_and_unrelated_processes() {
+        assert!(!is_linux_antigravity_legacy_background_process_from_tokens(
+            &tokens(&[
+                "/opt/antigravity-ide/resources/app/extensions/antigravity/bin/language_server_linux_x64",
+                "--enable_lsp",
+            ]),
+            "/opt/antigravity-ide/resources/app/extensions/antigravity/bin/language_server_linux_x64",
+        ));
+        assert!(!is_linux_antigravity_legacy_background_process_from_tokens(
+            &tokens(&[
+                "/usr/lib/electron41/electron",
+                "/opt/antigravity/antigravity.js"
+            ]),
+            "/usr/lib/electron41/electron",
+        ));
+        assert!(!is_linux_antigravity_legacy_background_process_from_tokens(
+            &tokens(&["less", "/opt/antigravity/resources/bin/language_server"]),
+            "/usr/bin/less",
+        ));
+    }
+
+    #[test]
+    fn singleton_lock_target_parsing() {
+        assert_eq!(
+            parse_chromium_singleton_lock_target("My-Host-Name-2392965"),
+            Some(("My-Host-Name", 2392965))
+        );
+        assert_eq!(parse_chromium_singleton_lock_target("host-abc"), None);
+        assert_eq!(parse_chromium_singleton_lock_target("host-0"), None);
+        assert_eq!(parse_chromium_singleton_lock_target("nohyphen"), None);
+    }
+
+    #[cfg(unix)]
+    struct LockDir(std::path::PathBuf);
+
+    #[cfg(unix)]
+    impl LockDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "cockpit-ag-lock-{}-{}",
+                name,
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("create lock dir");
+            Self(path)
+        }
+
+        fn write_lock(&self, target: &str) {
+            std::os::unix::fs::symlink(target, self.0.join("SingletonLock")).expect("lock");
+            std::os::unix::fs::symlink("/tmp/x/SingletonCookie", self.0.join("SingletonCookie"))
+                .expect("cookie");
+        }
+
+        fn has(&self, name: &str) -> bool {
+            std::fs::symlink_metadata(self.0.join(name)).is_ok()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for LockDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_singleton_lock_is_removed() {
+        let dir = LockDir::new("stale");
+        let host = current_hostname().expect("hostname");
+        // PID above the Linux pid_max ceiling, never running
+        dir.write_lock(&format!("{}-{}", host, 4_194_305));
+        clear_stale_antigravity_singleton_lock(&dir.0).expect("clear stale lock");
+        assert!(!dir.has("SingletonLock"));
+        assert!(!dir.has("SingletonCookie"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn singleton_lock_held_by_reused_unrelated_pid_is_treated_as_stale() {
+        let dir = LockDir::new("reused");
+        let host = current_hostname().expect("hostname");
+        // A live process that is not Antigravity (the test runner itself may carry
+        // an "antigravity" filter argument, so use a dedicated child)
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        dir.write_lock(&format!("{}-{}", host, child.id()));
+        let result = clear_stale_antigravity_singleton_lock(&dir.0);
+        let _ = child.kill();
+        let _ = child.wait();
+        result.expect("clear reused-pid lock");
+        assert!(!dir.has("SingletonLock"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn singleton_lock_held_by_live_antigravity_blocks_switch() {
+        let dir = LockDir::new("live");
+        let host = current_hostname().expect("hostname");
+        let mut child = std::process::Command::new("bash")
+            .args(["-c", "exec -a /opt/antigravity/antigravity sleep 30"])
+            .spawn()
+            .expect("spawn fake antigravity");
+        // Wait for exec so /proc/<pid>/cmdline shows the renamed argv[0]
+        for _ in 0..50 {
+            let cmdline =
+                std::fs::read(format!("/proc/{}/cmdline", child.id())).unwrap_or_default();
+            if String::from_utf8_lossy(&cmdline).contains("antigravity") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        dir.write_lock(&format!("{}-{}", host, child.id()));
+        let result = clear_stale_antigravity_singleton_lock(&dir.0);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(result.is_err());
+        assert!(dir.has("SingletonLock"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn singleton_lock_from_other_host_is_kept() {
+        let dir = LockDir::new("other-host");
+        dir.write_lock("definitely-not-this-host.invalid-12345");
+        clear_stale_antigravity_singleton_lock(&dir.0).expect("other host is not an error");
+        assert!(dir.has("SingletonLock"));
+    }
+}

@@ -12,6 +12,8 @@ struct AntigravityCredentialToken {
 struct AntigravityCredentialPayload {
     token: AntigravityCredentialToken,
     auth_method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id_token: Option<String>,
 }
 
 #[cfg(target_os = "windows")]
@@ -28,6 +30,8 @@ struct StoredAntigravityCredentialToken {
 struct StoredAntigravityCredentialPayload {
     token: StoredAntigravityCredentialToken,
     auth_method: Option<String>,
+    #[serde(default)]
+    id_token: Option<String>,
 }
 
 #[cfg(target_os = "windows")]
@@ -89,6 +93,7 @@ fn build_antigravity_credential_payload(account: &Account) -> Result<String, Str
             expiry,
         },
         auth_method: "consumer".to_string(),
+        id_token: account.token.id_token.clone(),
     })
     .map_err(|e| format!("序列化 Antigravity 系统凭据失败: {}", e))
 }

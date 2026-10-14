@@ -59,30 +59,46 @@ pub(crate) async fn switch_account_desktop(
                 // Persist prepared account data before changing the real credential.
                 // The current-account pointer and default binding are committed later.
                 modules::save_account(&account)?;
+                let default_dir = legacy_antigravity_user_data_dir()?;
                 if launch_on_switch {
-                    let default_dir = legacy_antigravity_user_data_dir()?
-                        .to_string_lossy()
-                        .to_string();
+                    let default_dir_str = default_dir.to_string_lossy().to_string();
                     modules::process::close_antigravity_legacy_instances(
-                        &[default_dir.clone()],
-                        &default_dir,
+                        &[default_dir_str.clone()],
+                        &default_dir_str,
                         20,
                     )?;
                     let _ = modules::antigravity_legacy_instance::update_default_pid(None);
+
+                    // 后台 language_server 不随窗口退出且持有旧账号凭据，需一并结束
+                    modules::process::close_antigravity_legacy_background_processes(5)?;
+                    // 锁持有者仍存活说明关闭阶段漏检，此时报错而不是删锁另起实例
+                    modules::process::clear_stale_antigravity_singleton_lock(&default_dir)?;
                 }
                 match auth_mode {
                     AntigravityDesktopAuthMode::SystemCredential => {
                         modules::logger::log_info("[Antigravity] 使用系统凭据认证模式写入账号");
                         modules::antigravity_credential::write_antigravity_system_credential(
                             &account,
-                        )
+                        )?;
+                        if let Ok(db_path) = legacy_antigravity_state_db_path() {
+                            if let Err(e) =
+                                modules::db::inject_account_token_to_path(&db_path, &account)
+                            {
+                                modules::logger::log_warn(&format!(
+                                    "[Antigravity] 同步更新 state.vscdb 失败 (非致命): {}",
+                                    e
+                                ));
+                            }
+                        }
                     }
                     AntigravityDesktopAuthMode::LegacyStateDb => {
                         modules::logger::log_info("[Antigravity] 使用旧版 SQLite 认证模式写入账号");
                         let db_path = legacy_antigravity_state_db_path()?;
-                        modules::db::inject_account_token_to_path(&db_path, &account).map(|_| ())
+                        modules::db::inject_account_token_to_path(&db_path, &account)?;
                     }
                 }
+                update_antigravity_app_storage(&default_dir, &account);
+                Ok(())
             },
             || {
                 if let Err(error) = modules::antigravity_legacy_instance::update_default_settings(
