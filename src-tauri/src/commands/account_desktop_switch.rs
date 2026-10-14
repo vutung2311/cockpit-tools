@@ -53,19 +53,25 @@ pub(crate) async fn switch_account_desktop(
         }
         let (account, launch_error) = complete_desktop_switch(
             || {
+                let default_dir = legacy_antigravity_user_data_dir()?;
                 if launch_on_switch {
-                    let default_dir = legacy_antigravity_user_data_dir()?
-                        .to_string_lossy()
-                        .to_string();
+                    let default_dir_str = default_dir.to_string_lossy().to_string();
                     modules::process::close_antigravity_legacy_instances(
-                        &[default_dir.clone()],
-                        &default_dir,
+                        &[default_dir_str.clone()],
+                        &default_dir_str,
                         20,
                     )?;
                     let _ = modules::antigravity_legacy_instance::update_default_pid(None);
+
+                    // 后台 language_server 不随窗口退出且持有旧账号凭据，需一并结束
+                    modules::process::close_antigravity_legacy_background_processes(5)?;
+                    // 锁持有者仍存活说明关闭阶段漏检，此时报错而不是删锁另起实例
+                    modules::process::clear_stale_antigravity_singleton_lock(&default_dir)?;
                 }
                 let db_path = legacy_antigravity_state_db_path()?;
-                modules::db::inject_account_token_to_path(&db_path, &account).map(|_| ())
+                modules::db::inject_account_token_to_path(&db_path, &account)?;
+                update_antigravity_app_storage(&default_dir, &account);
+                Ok(())
             },
             || {
                 let switched_account = modules::account::commit_switched_account(&account.id)?;

@@ -30,6 +30,8 @@ struct StoredAntigravityCredentialToken {
 struct StoredAntigravityCredentialPayload {
     token: StoredAntigravityCredentialToken,
     auth_method: Option<String>,
+    #[serde(default)]
+    id_token: Option<String>,
 }
 
 #[derive(Debug, Clone)]
