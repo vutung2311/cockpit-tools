@@ -872,12 +872,14 @@ fn antigravity_metadata_root_matches_target_with_product_metadata(
     let value = root.to_string_lossy().to_ascii_lowercase();
     match target {
         "antigravity" => {
-            value.contains("antigravity.app")
-                || value.ends_with("antigravity")
-                || value.ends_with("antigravity.exe")
-                || (root.is_dir()
-                    && (root.join("Antigravity.exe").exists()
-                        || root.join("antigravity.exe").exists()))
+            !value.contains("antigravity-ide")
+                && !value.contains("antigravity ide")
+                && (value.contains("antigravity.app")
+                    || value.ends_with("antigravity")
+                    || value.ends_with("antigravity.exe")
+                    || (root.is_dir()
+                        && (root.join("Antigravity.exe").exists()
+                            || root.join("antigravity.exe").exists())))
         }
         "antigravity_ide" => {
             value.contains("antigravity ide.app")

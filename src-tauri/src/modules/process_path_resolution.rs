@@ -38,9 +38,11 @@ mod app_path_config_guard_tests {
 mod linux_antigravity_path_tests {
     use super::{
         antigravity_executable_paths_match, antigravity_install_root_from_path,
-        first_linux_antigravity_executable, is_linux_antigravity_process_candidate,
-        linux_antigravity_discovery_paths, normalize_path_for_compare,
-        persisted_linux_antigravity_identity_matches, resolve_linux_antigravity_exec_path,
+        first_linux_antigravity_executable, is_legacy_antigravity_linux_path,
+        is_linux_antigravity_legacy_process_candidate_from_tokens,
+        is_linux_antigravity_process_candidate, linux_antigravity_discovery_paths,
+        normalize_path_for_compare, persisted_linux_antigravity_identity_matches,
+        resolve_linux_antigravity_exec_path, resolve_linux_antigravity_legacy_exec_path,
     };
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
@@ -426,6 +428,145 @@ mod linux_antigravity_path_tests {
                 "helper argument was admitted: {args}"
             );
         }
+    }
+
+    #[test]
+    fn legacy_linux_antigravity_path_distinguishes_ide_from_standalone() {
+        assert!(is_legacy_antigravity_linux_path("/usr/bin/antigravity"));
+        assert!(is_legacy_antigravity_linux_path("/opt/antigravity/antigravity"));
+        assert!(is_legacy_antigravity_linux_path("/home/user/.local/bin/antigravity"));
+
+        assert!(!is_legacy_antigravity_linux_path("/usr/bin/antigravity-ide"));
+        assert!(!is_legacy_antigravity_linux_path("/opt/antigravity-ide/bin/antigravity-ide"));
+        assert!(!is_legacy_antigravity_linux_path("/usr/local/bin/Antigravity IDE"));
+    }
+
+    #[test]
+    fn legacy_linux_antigravity_resolves_executable_and_rejects_ide() {
+        let install = PathTestDir::new("legacy-antigravity");
+        let bin = install.path().join("bin");
+        let executable = bin.join("antigravity");
+        write_executable(&executable);
+
+        assert_eq!(
+            resolve_linux_antigravity_legacy_exec_path(install.path()).expect("resolve legacy layout"),
+            executable
+        );
+
+        let ide_executable = bin.join("antigravity-ide");
+        write_executable(&ide_executable);
+        assert!(resolve_linux_antigravity_legacy_exec_path(&ide_executable).is_err());
+    }
+
+    #[test]
+    fn legacy_linux_antigravity_process_candidate_matching() {
+        let main_gui_tokens = vec![
+            "/usr/lib/electron41/electron".to_string(),
+            "--ozone-platform-hint=auto".to_string(),
+            "/opt/antigravity/antigravity.js".to_string(),
+        ];
+        assert!(is_linux_antigravity_legacy_process_candidate_from_tokens(
+            &main_gui_tokens,
+            "/usr/lib/electron41/electron",
+            false,
+        ));
+
+        let bash_supervisor_tokens = vec![
+            "/bin/bash".to_string(),
+            "/usr/bin/antigravity".to_string(),
+        ];
+        assert!(is_linux_antigravity_legacy_process_candidate_from_tokens(
+            &bash_supervisor_tokens,
+            "/bin/bash",
+            false,
+        ));
+
+        // Reject Antigravity IDE processes
+        let ide_tokens = vec![
+            "/usr/lib/electron39/electron".to_string(),
+            "/opt/antigravity-ide/resources/app/antigravity-ide.js".to_string(),
+        ];
+        assert!(!is_linux_antigravity_legacy_process_candidate_from_tokens(
+            &ide_tokens,
+            "/usr/lib/electron39/electron",
+            false,
+        ));
+
+        // Reject Chromium helpers
+        let helper_tokens = vec![
+            "/usr/lib/electron41/electron".to_string(),
+            "--type=zygote".to_string(),
+        ];
+        assert!(!is_linux_antigravity_legacy_process_candidate_from_tokens(
+            &helper_tokens,
+            "/usr/lib/electron41/electron",
+            false,
+        ));
+
+        // Reject language server
+        let ls_tokens = vec![
+            "/opt/antigravity/resources/bin/language_server".to_string(),
+            "--standalone".to_string(),
+        ];
+        assert!(!is_linux_antigravity_legacy_process_candidate_from_tokens(
+            &ls_tokens,
+            "/opt/antigravity/resources/bin/language_server",
+            false,
+        ));
+
+        // Bundled Electron binary and resources/app entry
+        let bundled_tokens = vec!["/opt/Antigravity/antigravity".to_string()];
+        assert!(is_linux_antigravity_legacy_process_candidate_from_tokens(
+            &bundled_tokens,
+            "/opt/antigravity/antigravity",
+            false,
+        ));
+        let app_dir_tokens = vec![
+            "/usr/bin/electron41".to_string(),
+            "/opt/antigravity/resources/app".to_string(),
+        ];
+        assert!(is_linux_antigravity_legacy_process_candidate_from_tokens(
+            &app_dir_tokens,
+            "/usr/lib/electron41/electron",
+            false,
+        ));
+
+        // Reject unrelated processes that merely mention the install path
+        let pager_tokens = vec![
+            "less".to_string(),
+            "/opt/antigravity/antigravity.js".to_string(),
+        ];
+        assert!(!is_linux_antigravity_legacy_process_candidate_from_tokens(
+            &pager_tokens,
+            "/usr/bin/less",
+            false,
+        ));
+        let crashpad_tokens = vec![
+            "/opt/antigravity/chrome_crashpad_handler".to_string(),
+            "--monitor-self-annotation=ptype=crashpad-handler".to_string(),
+            "--database=/home/user/.config/Antigravity/Crashpad".to_string(),
+        ];
+        assert!(!is_linux_antigravity_legacy_process_candidate_from_tokens(
+            &crashpad_tokens,
+            "/opt/antigravity/chrome_crashpad_handler",
+            false,
+        ));
+        let encoder_tokens = vec!["/opt/antigravity/resources/bin/webm_encoder".to_string()];
+        assert!(!is_linux_antigravity_legacy_process_candidate_from_tokens(
+            &encoder_tokens,
+            "/opt/antigravity/resources/bin/webm_encoder",
+            false,
+        ));
+        let shell_command_tokens = vec![
+            "/bin/bash".to_string(),
+            "-c".to_string(),
+            "tail -f /usr/bin/antigravity".to_string(),
+        ];
+        assert!(!is_linux_antigravity_legacy_process_candidate_from_tokens(
+            &shell_command_tokens,
+            "/usr/bin/bash",
+            false,
+        ));
     }
 }
 
@@ -971,6 +1112,68 @@ fn first_linux_antigravity_executable(
 }
 
 #[cfg(any(target_os = "linux", test))]
+fn is_legacy_antigravity_linux_path(path: &str) -> bool {
+    let lower = path.trim().to_ascii_lowercase();
+    (lower.contains("antigravity") || lower.contains("/opt/antigravity"))
+        && !lower.contains("antigravity-ide")
+        && !lower.contains("antigravity ide")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn resolve_linux_antigravity_legacy_exec_path(path: &Path) -> Result<std::path::PathBuf, String> {
+    if path.is_file() {
+        let path_str = path.to_string_lossy();
+        let lower = path_str.to_ascii_lowercase();
+        if lower.contains("antigravity-ide")
+            || lower.contains("antigravity ide")
+            || lower.contains("/extensions/")
+            || lower.contains("language_server")
+            || lower.ends_with("/out/cli.js")
+            || lower.ends_with("/cli.js")
+        {
+            return Err(format!(
+                "Linux Antigravity legacy path points to IDE launcher, language server, or CLI helper: {}",
+                path.display()
+            ));
+        }
+        if is_linux_executable_file(path) {
+            return Ok(path.to_path_buf());
+        }
+        return Err(format!(
+            "Linux Antigravity legacy executable is not executable: {}",
+            path.display()
+        ));
+    }
+
+    if path.is_dir() {
+        for relative in ["antigravity", "bin/antigravity"] {
+            let candidate = path.join(relative);
+            if is_linux_executable_file(&candidate) {
+                return Ok(candidate);
+            }
+        }
+        return Err(format!(
+            "Linux Antigravity legacy install directory does not contain an executable antigravity or bin/antigravity: {}",
+            path.display()
+        ));
+    }
+
+    Err(format!(
+        "Linux Antigravity legacy path does not exist: {}",
+        path.display()
+    ))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn first_linux_antigravity_legacy_executable(
+    candidates: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .find_map(|candidate| resolve_linux_antigravity_legacy_exec_path(&candidate).ok())
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn linux_antigravity_install_root_for_match(path: &Path) -> Option<PathBuf> {
     let file_name = path.file_name()?.to_string_lossy();
     if !file_name.eq_ignore_ascii_case("antigravity-ide") {
@@ -1181,13 +1384,20 @@ pub fn detect_antigravity_legacy_exec_path() -> Option<std::path::PathBuf> {
 
     #[cfg(target_os = "linux")]
     {
-        let candidates = [
-            "/usr/bin/antigravity",
-            "/opt/antigravity/antigravity",
-            "/usr/share/antigravity/antigravity",
-        ]
-        .map(PathBuf::from);
-        if let Some(executable) = first_linux_antigravity_executable(candidates) {
+        let mut candidates = vec![
+            PathBuf::from("/usr/bin/antigravity"),
+            PathBuf::from("/opt/antigravity/antigravity"),
+            PathBuf::from("/usr/share/antigravity/antigravity"),
+        ];
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(home.join(".local/bin/antigravity"));
+        }
+        if let Some(path_env) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path_env) {
+                candidates.push(dir.join("antigravity"));
+            }
+        }
+        if let Some(executable) = first_linux_antigravity_legacy_executable(candidates) {
             return Some(executable);
         }
     }
@@ -2647,9 +2857,13 @@ fn resolve_antigravity_legacy_launch_path() -> Result<std::path::PathBuf, String
 
         #[cfg(target_os = "linux")]
         {
-            let custom_path = Path::new(&custom);
-            if custom_path.exists() {
-                return resolve_linux_antigravity_exec_path(custom_path);
+            if is_legacy_antigravity_linux_path(&custom) {
+                let custom_path = Path::new(&custom);
+                if custom_path.exists() {
+                    if let Ok(path) = resolve_linux_antigravity_legacy_exec_path(custom_path) {
+                        return Ok(path);
+                    }
+                }
             }
         }
 
@@ -3713,6 +3927,86 @@ fn is_linux_antigravity_process_candidate_from_tokens(
         return false;
     }
     !is_linux_chromium_helper_tokens(tokens)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn is_linux_antigravity_legacy_process_candidate_from_tokens(
+    tokens: &[String],
+    exe_path_lower: &str,
+    expected_executable_match: bool,
+) -> bool {
+    let has_ide = exe_path_lower.contains("antigravity-ide")
+        || exe_path_lower.contains("antigravity ide")
+        || tokens.iter().any(|token| {
+            let lower = token.to_ascii_lowercase();
+            lower.contains("antigravity-ide") || lower.contains("antigravity ide")
+        });
+    if has_ide {
+        return false;
+    }
+
+    if exe_path_lower.contains("language_server")
+        || exe_path_lower.contains("/extensions/")
+        || tokens.iter().any(|token| {
+            let lower = token.to_ascii_lowercase();
+            lower.contains("language_server")
+                || lower.contains("/resources/app/extensions/")
+                || lower.contains("\\resources\\app\\extensions\\")
+        })
+    {
+        return false;
+    }
+
+    if is_linux_chromium_helper_tokens(tokens) {
+        return false;
+    }
+
+    if expected_executable_match {
+        return true;
+    }
+
+    fn base_name(path: &str) -> &str {
+        path.rsplit('/').next().unwrap_or(path)
+    }
+
+    // 仅按“程序本身”判断，避免 `less /opt/antigravity/...`、crashpad 等进程误匹配
+    let program_lower = if exe_path_lower.is_empty() {
+        tokens
+            .first()
+            .map(|token| token.to_ascii_lowercase())
+            .unwrap_or_default()
+    } else {
+        exe_path_lower.to_string()
+    };
+    let program_name = base_name(&program_lower);
+
+    // 打包自带的 Electron 主程序：<install>/antigravity
+    if program_name == "antigravity" {
+        return true;
+    }
+
+    // 系统 Electron 加载入口脚本：electron* /opt/antigravity/antigravity.js | resources/app(.asar)
+    if program_name.starts_with("electron") || program_name == "node" {
+        return tokens.iter().skip(1).any(|token| {
+            let lower = token.to_ascii_lowercase();
+            if lower.starts_with('-') {
+                return false;
+            }
+            let lower = lower.trim_end_matches('/');
+            base_name(lower) == "antigravity.js"
+                || ((lower.ends_with("/resources/app") || lower.ends_with("/resources/app.asar"))
+                    && lower.contains("antigravity"))
+        });
+    }
+
+    // 启动脚本本身（含其后台 supervisor 子 shell）：bash /usr/bin/antigravity
+    if matches!(program_name, "bash" | "sh" | "dash" | "zsh") {
+        return tokens
+            .get(1)
+            .is_some_and(|script| base_name(&script.to_ascii_lowercase()) == "antigravity");
+    }
+
+    false
 }
 
 #[cfg(any(target_os = "linux", test))]
