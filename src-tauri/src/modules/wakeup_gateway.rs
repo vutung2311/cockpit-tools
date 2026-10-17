@@ -829,12 +829,27 @@ pub(crate) fn official_antigravity_app_version() -> String {
         }
     }
 
+    // 服务端按客户端版本下发额度分组（旧版本拿不到 Gemini 分组），
+    // 因此在 IDE 与独立版 Antigravity 中取已安装的最高版本
+    let mut versions: Vec<String> = Vec::new();
     if let Some(product_json_path) = official_antigravity_product_json_path() {
         if let Some(version) = read_json_string_field(&product_json_path, "ideVersion")
             .or_else(|| read_json_string_field(&product_json_path, "version"))
         {
-            return version;
+            versions.push(version);
         }
+    }
+    for root in official_antigravity_asar_roots() {
+        let asar = root.join("resources").join("app.asar");
+        if let Some(version) = read_asar_package_version(&asar) {
+            versions.push(version);
+        }
+    }
+    if let Some(version) = versions
+        .into_iter()
+        .max_by(|a, b| compare_dotted_versions(a, b))
+    {
+        return version;
     }
 
     let plist_path = official_antigravity_info_plist_path();
@@ -855,6 +870,110 @@ pub(crate) fn official_antigravity_app_version() -> String {
 
     // 未读取到官方安装版本时，不再返回写死版本号。
     String::new()
+}
+
+/// 独立版 Antigravity 2.x 没有 resources/app/product.json，版本号只存在 app.asar 内的 package.json
+fn official_antigravity_asar_roots() -> Vec<std::path::PathBuf> {
+    let mut roots: Vec<std::path::PathBuf> = official_antigravity_root_for_version()
+        .into_iter()
+        .collect();
+    #[cfg(target_os = "linux")]
+    for default_root in ["/opt/antigravity", "/usr/share/antigravity"] {
+        let default_root = std::path::PathBuf::from(default_root);
+        if !roots.contains(&default_root) {
+            roots.push(default_root);
+        }
+    }
+    roots
+}
+
+/// 读取 asar 归档中顶层 package.json 的 version，只读取文件头与该文件本身。
+/// 格式：[u32 4][u32 头部 pickle 长度][u32][u32 JSON 长度][JSON 头部]...[文件数据]
+fn read_asar_package_version(asar_path: &std::path::Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(asar_path).ok()?;
+    let mut prefix = [0u8; 16];
+    file.read_exact(&mut prefix).ok()?;
+    let word = |i: usize| u32::from_le_bytes(prefix[i..i + 4].try_into().unwrap()) as u64;
+    let (header_pickle_size, json_len) = (word(4), word(12));
+    if json_len == 0 || json_len > 64 * 1024 * 1024 {
+        return None;
+    }
+    let mut header = vec![0u8; json_len as usize];
+    file.read_exact(&mut header).ok()?;
+    let header: serde_json::Value = serde_json::from_slice(&header).ok()?;
+    let entry = header.get("files")?.get("package.json")?;
+    let offset: u64 = entry.get("offset")?.as_str()?.parse().ok()?;
+    let size = entry.get("size")?.as_u64()?;
+    if size > 1024 * 1024 {
+        return None;
+    }
+    file.seek(SeekFrom::Start(8 + header_pickle_size + offset)).ok()?;
+    let mut content = vec![0u8; size as usize];
+    file.read_exact(&mut content).ok()?;
+    let package: serde_json::Value = serde_json::from_slice(&content).ok()?;
+    package
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+fn compare_dotted_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parse = |v: &str| -> Vec<u64> {
+        v.split(|c: char| !c.is_ascii_digit())
+            .filter(|part| !part.is_empty())
+            .map(|part| part.parse().unwrap_or(0))
+            .collect()
+    };
+    parse(a).cmp(&parse(b))
+}
+
+#[cfg(test)]
+mod official_version_tests {
+    use super::{compare_dotted_versions, read_asar_package_version};
+    use std::cmp::Ordering;
+
+    fn write_asar(dir: &std::path::Path, package_json: &str) -> std::path::PathBuf {
+        let other = b"console.log(1)";
+        let header = serde_json::json!({ "files": {
+            "main.js": { "offset": "0", "size": other.len() },
+            "package.json": { "offset": other.len().to_string(), "size": package_json.len() },
+        }})
+        .to_string();
+        // pickle：头部 JSON 按 4 字节对齐
+        let padded = (header.len() + 3) / 4 * 4;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&((padded + 8) as u32).to_le_bytes());
+        bytes.extend_from_slice(&((padded + 4) as u32).to_le_bytes());
+        bytes.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.resize(16 + padded, 0);
+        bytes.extend_from_slice(other);
+        bytes.extend_from_slice(package_json.as_bytes());
+        let path = dir.join("app.asar");
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn reads_version_from_asar_package_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let asar = write_asar(dir.path(), r#"{"name":"antigravity","version":"2.23.1"}"#);
+        assert_eq!(read_asar_package_version(&asar).as_deref(), Some("2.23.1"));
+        assert_eq!(read_asar_package_version(&dir.path().join("missing.asar")), None);
+        std::fs::write(dir.path().join("bad.asar"), b"not an asar").unwrap();
+        assert_eq!(read_asar_package_version(&dir.path().join("bad.asar")), None);
+    }
+
+    #[test]
+    fn compares_versions_numerically() {
+        assert_eq!(compare_dotted_versions("2.23.1", "2.5.5"), Ordering::Greater);
+        assert_eq!(compare_dotted_versions("1.20.5", "2.5.5"), Ordering::Less);
+        assert_eq!(compare_dotted_versions("2.5.5", "2.5.5"), Ordering::Equal);
+    }
 }
 
 fn build_official_ls_metadata_bytes() -> Vec<u8> {

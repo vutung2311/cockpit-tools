@@ -43,6 +43,16 @@ test('explicit quota buckets keep percentages and distant reset times unchanged'
   assert.match(html, /91%/);
 });
 
+test('real windows are never mixed with model-level quotas guessed from names', () => {
+  const items = getAntigravityQuotaDisplayItems(account([
+    model('3p-5h', 100), model('3p-weekly', 16),
+    model('claude-opus-low', 16), model('gemini-3.5-flash-low', 91), model('gemini-3-flash', 91),
+  ]), []);
+  assert.deepEqual(items.map((i) => i.key), ['claude:5h', 'claude:weekly']);
+  const html = renderToStaticMarkup(createElement(AntigravityQuotaSection, { items, t }));
+  assert.doesNotMatch(html, /91%/);
+});
+
 test('free tier accounts only map to weekly quota and omit 5h quota bars', () => {
   const freeAccount: Account = {
     ...account([
