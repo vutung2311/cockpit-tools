@@ -1275,9 +1275,16 @@ fn build_quota_data_from_response(
                             .map(|s| s.to_string());
                         let remaining_fraction =
                             bucket.get("remainingFraction").and_then(|v| v.as_f64());
+                        // 窗口未开始计量时服务端不返回 description，resetTime 只是
+                        // “当前时间 + 窗口长度”的占位值；与 Antigravity 客户端一致，此时不展示重置时间
+                        let has_description = bucket
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|s| !s.trim().is_empty());
                         let reset_time = bucket
                             .get("resetTime")
                             .and_then(|v| v.as_str())
+                            .filter(|_| has_description)
                             .map(|s| s.to_string());
 
                         if let (Some(id), Some(fraction)) = (bucket_id, remaining_fraction) {
