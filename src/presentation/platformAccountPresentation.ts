@@ -522,6 +522,11 @@ export function isAccountNeedsReauth(
   return false;
 }
 
+const ANTIGRAVITY_SUMMARY_BUCKETS = new Set([
+  '3p-5h', 'claude:5h', '3p-weekly', 'claude:weekly',
+  'gemini-5h', 'gemini:5h', 'gemini-weekly', 'gemini:weekly',
+]);
+
 export function getAntigravityQuotaDisplayItems(
   account: Account,
   _displayGroups: DisplayGroup[],
@@ -537,7 +542,17 @@ export function getAntigravityQuotaDisplayItems(
   let gemini5h: (typeof models)[0] | undefined;
   let geminiWeekly: (typeof models)[0] | undefined;
 
-  if (isFree) {
+  const findBucket = (...names: string[]) => models.find((m) => names.includes(m.name));
+  const hasSummaryBuckets = models.some((m) => ANTIGRAVITY_SUMMARY_BUCKETS.has(m.name));
+
+  if (hasSummaryBuckets && !isFree) {
+    // 与 Antigravity 客户端一致：有真实额度窗口时只展示服务端返回的窗口，
+    // 不再用模型名猜测（模型级额度的重置时间与 5h / Weekly 窗口无关）
+    claude5h = findBucket('3p-5h', 'claude:5h');
+    claudeWeekly = findBucket('3p-weekly', 'claude:weekly');
+    gemini5h = findBucket('gemini-5h', 'gemini:5h');
+    geminiWeekly = findBucket('gemini-weekly', 'gemini:weekly');
+  } else if (isFree) {
     // 免费账号仅有 Weekly 额度，不显示 5h 额度
     claudeWeekly =
       models.find((m) => m.name === '3p-weekly' || m.name === 'claude:weekly') ||
