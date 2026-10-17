@@ -244,7 +244,8 @@ async fn summary_verification_error_is_not_cached_as_a_successful_quota_refresh(
 fn successful_summary_preserves_actual_percentage_and_reset() {
     let quota = build_quota_data_from_response(QuotaResponse { models: Default::default() },
         None, vec![], Some(json!({"groups":[{"buckets":[{
-            "bucketId":"gemini-5h", "remainingFraction":0.25, "resetTime":"2099-01-01T00:00:00Z"
+            "bucketId":"gemini-5h", "remainingFraction":0.25, "resetTime":"2099-01-01T00:00:00Z",
+            "description":"You have used some of your 5-hour limit."
         }]}]})), None, None);
     assert_eq!(quota.models[0].percentage, 25);
     assert_eq!(quota.models[0].reset_time, "2099-01-01T00:00:00Z");
@@ -282,4 +283,16 @@ fn failed_summary_preserves_dynamic_summary_groups_while_staying_stale() {
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "Neon Preview");
     assert_eq!(groups[0].windows[0].reset_time, "2099-01-02T00:00:00Z");
+}
+
+#[test]
+fn unstarted_window_placeholder_reset_is_dropped() {
+    let quota = build_quota_data_from_response(QuotaResponse { models: Default::default() },
+        None, vec![], Some(json!({"groups":[{"buckets":[{
+            "bucketId":"3p-weekly", "remainingFraction":1, "resetTime":"2099-01-08T00:00:00Z",
+            "window":"weekly"
+        }]}]})), None, None);
+    assert_eq!(quota.models[0].percentage, 100);
+    assert_eq!(quota.models[0].reset_time, "");
+    assert!(!quota.quota_summary_stale);
 }
