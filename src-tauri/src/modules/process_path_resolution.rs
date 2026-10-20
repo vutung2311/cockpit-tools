@@ -1233,18 +1233,68 @@ fn persisted_linux_antigravity_identity_matches(
 
 fn antigravity_install_root_from_executable(path: &Path) -> Option<PathBuf> {
     let parent = path.parent()?;
-    let is_linux_launcher = path
-        .file_name()
-        .map(|name| {
-            name.to_string_lossy()
-                .eq_ignore_ascii_case("antigravity-ide")
-        })
-        .unwrap_or(false);
+    let file_name = path.file_name()?.to_string_lossy();
+    let is_antigravity = file_name.eq_ignore_ascii_case("antigravity")
+        || file_name.eq_ignore_ascii_case("antigravity.exe");
+    let is_linux_launcher = file_name.eq_ignore_ascii_case("antigravity-ide");
     let is_bin_directory = parent
         .file_name()
         .map(|name| name.to_string_lossy().eq_ignore_ascii_case("bin"))
         .unwrap_or(false);
-    if is_linux_launcher && is_bin_directory {
+
+    if parent.join("resources").exists()
+        || parent.join("app.asar").exists()
+        || parent.join("antigravity.js").exists()
+    {
+        return Some(parent.to_path_buf());
+    }
+
+    if is_bin_directory {
+        if let Some(grandparent) = parent.parent() {
+            if grandparent.join("resources").exists()
+                || grandparent.join("app.asar").exists()
+                || grandparent.join("antigravity.js").exists()
+            {
+                return Some(grandparent.to_path_buf());
+            }
+        }
+    }
+
+    let is_system_bin = parent == Path::new("/usr/bin")
+        || parent == Path::new("/usr/local/bin")
+        || parent == Path::new("/bin");
+
+    if (is_linux_launcher || is_antigravity) && is_bin_directory && !is_system_bin {
+        return parent.parent().map(Path::to_path_buf);
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    {
+        if is_antigravity {
+            for default_root in ["/opt/antigravity", "/usr/share/antigravity"] {
+                let default_path = PathBuf::from(default_root);
+                if default_path.exists() {
+                    return Some(default_path);
+                }
+            }
+        }
+        if is_linux_launcher {
+            for default_root in ["/opt/antigravity-ide", "/usr/share/antigravity-ide"] {
+                let default_path = PathBuf::from(default_root);
+                if default_path.exists() {
+                    return Some(default_path);
+                }
+            }
+            if let Some(home) = dirs::home_dir() {
+                let user_local = home.join(".local/share/antigravity-ide");
+                if user_local.exists() {
+                    return Some(user_local);
+                }
+            }
+        }
+    }
+
+    if (is_linux_launcher || is_antigravity) && is_bin_directory {
         return parent.parent().map(Path::to_path_buf);
     }
     Some(parent.to_path_buf())

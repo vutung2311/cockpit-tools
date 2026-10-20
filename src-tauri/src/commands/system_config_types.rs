@@ -351,7 +351,7 @@ pub struct GeneralConfig {
     pub workbuddy_quota_alert_threshold: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AntigravityInstalledVersionInfo {
     pub product_name: String,
     pub version: String,
@@ -611,6 +611,180 @@ fn antigravity_product_json_target(root: &Path) -> Option<&'static str> {
     None
 }
 
+fn antigravity_asar_candidates(root: &Path) -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            root.join("Contents")
+                .join("Resources")
+                .join("app.asar"),
+            root.join("resources").join("app.asar"),
+            root.join("app.asar"),
+        ]
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        vec![
+            root.join("resources").join("app.asar"),
+            root.join("app.asar"),
+        ]
+    }
+}
+
+fn antigravity_package_json_candidates(root: &Path) -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            root.join("Contents")
+                .join("Resources")
+                .join("app")
+                .join("package.json"),
+            root.join("resources").join("app").join("package.json"),
+            root.join("app").join("package.json"),
+        ]
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        vec![
+            root.join("resources").join("app").join("package.json"),
+            root.join("app").join("package.json"),
+        ]
+    }
+}
+
+/// 读取 asar 归档中顶层 package.json 的元数据，只读取头部 JSON 与该文件自身。
+/// 格式：[u32 4][u32 头部 pickle 长度][u32][u32 JSON 长度][JSON 头部]...[文件数据]
+fn read_asar_package_metadata(asar_path: &Path) -> Option<(String, String)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(asar_path).ok()?;
+    let mut prefix = [0u8; 16];
+    file.read_exact(&mut prefix).ok()?;
+    let word = |i: usize| u32::from_le_bytes(prefix[i..i + 4].try_into().unwrap()) as u64;
+    let (header_pickle_size, json_len) = (word(4), word(12));
+    if json_len == 0 || json_len > 64 * 1024 * 1024 {
+        return None;
+    }
+    let mut header = vec![0u8; json_len as usize];
+    file.read_exact(&mut header).ok()?;
+    let header: serde_json::Value = serde_json::from_slice(&header).ok()?;
+    let entry = header.get("files")?.get("package.json")?;
+    let offset: u64 = entry.get("offset")?.as_str()?.parse().ok()?;
+    let size = entry.get("size")?.as_u64()?;
+    if size > 1024 * 1024 {
+        return None;
+    }
+    file.seek(SeekFrom::Start(8 + header_pickle_size + offset)).ok()?;
+    let mut content = vec![0u8; size as usize];
+    file.read_exact(&mut content).ok()?;
+    let package: serde_json::Value = serde_json::from_slice(&content).ok()?;
+    let version = package
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())?
+        .to_string();
+    let product_name = package
+        .get("productName")
+        .or_else(|| package.get("name"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "Antigravity".to_string());
+    Some((product_name, version))
+}
+
+fn read_antigravity_asar_metadata(root: &Path) -> Option<AntigravityInstalledVersionInfo> {
+    for asar_path in antigravity_asar_candidates(root) {
+        if let Some((mut product_name, version)) = read_asar_package_metadata(&asar_path) {
+            if product_name.eq_ignore_ascii_case("antigravity") {
+                product_name = "Antigravity".to_string();
+            } else if product_name.eq_ignore_ascii_case("antigravity-ide") {
+                product_name = "Antigravity IDE".to_string();
+            }
+            return Some(AntigravityInstalledVersionInfo {
+                product_name,
+                version,
+                app_path: root.to_string_lossy().to_string(),
+                source: "app.asar".to_string(),
+            });
+        }
+    }
+    None
+}
+
+fn read_antigravity_package_json_metadata(root: &Path) -> Option<AntigravityInstalledVersionInfo> {
+    for path in antigravity_package_json_candidates(root) {
+        // 若同级存在 product.json，则为 VSCode 衍生架构（如 IDE），其版本以 product.json 为准
+        if path.parent().map(|p| p.join("product.json").exists()).unwrap_or(false) {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        let Some(version) = json_string_field(&value, &["version"]) else {
+            continue;
+        };
+        let mut product_name = json_string_field(
+            &value,
+            &["productName", "nameLong", "nameShort", "name"],
+        )
+        .unwrap_or_else(|| "Antigravity".to_string());
+        if product_name.eq_ignore_ascii_case("antigravity") {
+            product_name = "Antigravity".to_string();
+        } else if product_name.eq_ignore_ascii_case("antigravity-ide") {
+            product_name = "Antigravity IDE".to_string();
+        }
+        return Some(AntigravityInstalledVersionInfo {
+            product_name,
+            version,
+            app_path: root.to_string_lossy().to_string(),
+            source: "package.json".to_string(),
+        });
+    }
+    None
+}
+
+fn antigravity_asar_target(root: &Path) -> Option<&'static str> {
+    for asar_path in antigravity_asar_candidates(root) {
+        if let Some((product_name, _)) = read_asar_package_metadata(&asar_path) {
+            let name = product_name.to_ascii_lowercase();
+            if name.contains("ide") {
+                return Some("antigravity_ide");
+            }
+            if name.contains("antigravity") {
+                return Some("antigravity");
+            }
+        }
+    }
+    for pkg_path in antigravity_package_json_candidates(root) {
+        if let Ok(content) = fs::read_to_string(&pkg_path) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+                let name = json_string_field(&value, &["productName", "nameLong", "nameShort", "name"])
+                    .map(|n| n.to_ascii_lowercase());
+                if let Some(name) = name {
+                    if name.contains("ide") {
+                        return Some("antigravity_ide");
+                    }
+                    if name.contains("antigravity") {
+                        return Some("antigravity");
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn antigravity_metadata_target(root: &Path) -> Option<&'static str> {
+    antigravity_product_json_target(root).or_else(|| antigravity_asar_target(root))
+}
+
 #[cfg(target_os = "macos")]
 fn read_antigravity_macos_bundle_metadata(root: &Path) -> Option<AntigravityInstalledVersionInfo> {
     let plist_path = root.join("Contents").join("Info.plist");
@@ -790,6 +964,16 @@ fn normalize_antigravity_metadata_root(path: &Path) -> Option<PathBuf> {
         }
     }
 
+    if let Some(root) = crate::modules::process::antigravity_install_root_from_path(path) {
+        if root.join("resources").exists()
+            || root.join("app.asar").exists()
+            || root.join("app").exists()
+            || root.join("antigravity.js").exists()
+        {
+            return Some(root);
+        }
+    }
+
     #[cfg(unix)]
     let normalized = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     #[cfg(not(unix))]
@@ -867,7 +1051,7 @@ fn antigravity_metadata_root_matches_target_with_product_metadata(
         return true;
     };
     if prefer_product_metadata {
-        if let Some(metadata_target) = antigravity_product_json_target(root) {
+        if let Some(metadata_target) = antigravity_metadata_target(root) {
             return metadata_target == target;
         }
     }
@@ -951,11 +1135,52 @@ fn antigravity_metadata_candidates(
             }
         }
 
-        if normalize_antigravity_metadata_target(target) != Some("antigravity") {
-            if let Some(home) = dirs::home_dir() {
+        if let Some(home) = dirs::home_dir() {
+            if normalize_antigravity_metadata_target(target) != Some("antigravity_ide") {
+                let user_local_antigravity = home.join(".local/share/antigravity");
+                if user_local_antigravity.exists() {
+                    push_unique_antigravity_candidate(&mut candidates, user_local_antigravity);
+                }
+            }
+            if normalize_antigravity_metadata_target(target) != Some("antigravity") {
                 let user_local_share = home.join(".local/share/antigravity-ide");
                 if user_local_share.exists() {
                     push_unique_antigravity_candidate(&mut candidates, user_local_share);
+                }
+            }
+        }
+
+        if scan_mode == AntigravityVersionScanMode::Full {
+            let push_detected_candidate = |candidates: &mut Vec<PathBuf>, path: PathBuf| {
+                if let Some(root) = normalize_antigravity_metadata_root(&path) {
+                    if antigravity_metadata_root_matches_target(&root, target) {
+                        push_unique_antigravity_candidate(candidates, root);
+                    }
+                }
+            };
+
+            match normalize_antigravity_metadata_target(target) {
+                Some("antigravity") => {
+                    if let Some(path) =
+                        crate::modules::process::detect_antigravity_legacy_exec_path()
+                    {
+                        push_detected_candidate(&mut candidates, path);
+                    }
+                }
+                Some("antigravity_ide") => {
+                    if let Some(path) = crate::modules::process::detect_antigravity_exec_path() {
+                        push_detected_candidate(&mut candidates, path);
+                    }
+                }
+                _ => {
+                    if let Some(path) =
+                        crate::modules::process::detect_antigravity_legacy_exec_path()
+                    {
+                        push_detected_candidate(&mut candidates, path);
+                    }
+                    if let Some(path) = crate::modules::process::detect_antigravity_exec_path() {
+                        push_detected_candidate(&mut candidates, path);
+                    }
                 }
             }
         }
@@ -1044,29 +1269,96 @@ fn antigravity_metadata_candidates(
     candidates
 }
 
+fn antigravity_version_info_matches_target(
+    info: &AntigravityInstalledVersionInfo,
+    target: Option<&str>,
+) -> bool {
+    let Some(target) = normalize_antigravity_metadata_target(target) else {
+        return true;
+    };
+    let name = info.product_name.to_ascii_lowercase();
+    match target {
+        "antigravity" => !name.contains("ide"),
+        "antigravity_ide" => name.contains("ide"),
+        _ => true,
+    }
+}
+
+fn compare_dotted_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parse = |v: &str| -> Vec<u64> {
+        v.split(|c: char| !c.is_ascii_digit())
+            .filter(|part| !part.is_empty())
+            .map(|part| part.parse().unwrap_or(0))
+            .collect()
+    };
+    parse(a).cmp(&parse(b))
+}
+
 fn resolve_antigravity_installed_version_info_for_target_with_mode(
     target: Option<&str>,
     scan_mode: AntigravityVersionScanMode,
 ) -> Option<AntigravityInstalledVersionInfo> {
+    let mut infos: Vec<AntigravityInstalledVersionInfo> = Vec::new();
+
     for root in antigravity_metadata_candidates(target, scan_mode) {
         if let Some(info) = read_antigravity_product_json_metadata(&root) {
-            return Some(info);
+            if antigravity_version_info_matches_target(&info, target) {
+                if target.is_some() {
+                    return Some(info);
+                }
+                infos.push(info);
+                continue;
+            }
+        }
+
+        if let Some(info) = read_antigravity_package_json_metadata(&root) {
+            if antigravity_version_info_matches_target(&info, target) {
+                if target.is_some() {
+                    return Some(info);
+                }
+                infos.push(info);
+                continue;
+            }
+        }
+
+        if let Some(info) = read_antigravity_asar_metadata(&root) {
+            if antigravity_version_info_matches_target(&info, target) {
+                if target.is_some() {
+                    return Some(info);
+                }
+                infos.push(info);
+                continue;
+            }
         }
 
         #[cfg(target_os = "macos")]
         if let Some(info) = read_antigravity_macos_bundle_metadata(&root) {
-            return Some(info);
+            if antigravity_version_info_matches_target(&info, target) {
+                if target.is_some() {
+                    return Some(info);
+                }
+                infos.push(info);
+                continue;
+            }
         }
 
         #[cfg(target_os = "windows")]
         if scan_mode == AntigravityVersionScanMode::Full {
             if let Some(info) = read_antigravity_windows_exe_metadata(&root) {
-                return Some(info);
+                if antigravity_version_info_matches_target(&info, target) {
+                    if target.is_some() {
+                        return Some(info);
+                    }
+                    infos.push(info);
+                    continue;
+                }
             }
         }
     }
 
-    None
+    infos
+        .into_iter()
+        .max_by(|a, b| compare_dotted_versions(&a.version, &b.version))
 }
 
 fn detect_and_cache_antigravity_installed_version_info_for_target(
