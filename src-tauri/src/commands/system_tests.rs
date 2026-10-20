@@ -4,7 +4,9 @@
         antigravity_metadata_root_matches_target_with_product_metadata,
         antigravity_product_json_target, apply_codex_quota_alert_thresholds,
         apply_general_config_updates, lock_general_config_transaction,
-        normalize_antigravity_metadata_root, read_antigravity_product_json_metadata, UserConfig,
+        normalize_antigravity_metadata_root, read_antigravity_asar_metadata,
+        read_antigravity_package_json_metadata, read_antigravity_product_json_metadata,
+        resolve_antigravity_installed_version_info_for_target, UserConfig,
     };
     use std::path::{Path, PathBuf};
     use std::sync::mpsc;
@@ -233,6 +235,138 @@
                 true,
             )
         );
+    }
+
+    fn write_antigravity_asar(root: &Path, package_json: &str) -> PathBuf {
+        let other = b"console.log(1)";
+        let header = serde_json::json!({ "files": {
+            "main.js": { "offset": "0", "size": other.len() },
+            "package.json": { "offset": other.len().to_string(), "size": package_json.len() },
+        }})
+        .to_string();
+        let padded = (header.len() + 3) / 4 * 4;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&((padded + 8) as u32).to_le_bytes());
+        bytes.extend_from_slice(&((padded + 4) as u32).to_le_bytes());
+        bytes.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.resize(16 + padded, 0);
+        bytes.extend_from_slice(other);
+        bytes.extend_from_slice(package_json.as_bytes());
+        let asar_dir = root.join("resources");
+        std::fs::create_dir_all(&asar_dir).expect("create asar dir");
+        let path = asar_dir.join("app.asar");
+        std::fs::write(&path, bytes).expect("write app.asar");
+        path
+    }
+
+    #[test]
+    fn antigravity_metadata_reads_version_from_asar() {
+        let install = MetadataTestDir::new("asar-metadata");
+        write_antigravity_asar(
+            install.path(),
+            r#"{"name":"antigravity","productName":"Antigravity","version":"2.24.0"}"#,
+        );
+
+        let metadata = read_antigravity_asar_metadata(install.path())
+            .expect("read version metadata from app.asar");
+        assert_eq!(metadata.version, "2.24.0");
+        assert_eq!(metadata.product_name, "Antigravity");
+        assert_eq!(metadata.source, "app.asar");
+
+        assert!(
+            antigravity_metadata_root_matches_target_with_product_metadata(
+                install.path(),
+                Some("antigravity"),
+                true,
+            )
+        );
+        assert!(
+            !antigravity_metadata_root_matches_target_with_product_metadata(
+                install.path(),
+                Some("antigravity_ide"),
+                true,
+            )
+        );
+    }
+
+    #[test]
+    fn antigravity_metadata_reads_unpacked_package_json_when_no_product_json() {
+        let install = MetadataTestDir::new("unpacked-package-json");
+        let app_dir = install.path().join("resources").join("app");
+        std::fs::create_dir_all(&app_dir).expect("create app dir");
+        std::fs::write(
+            app_dir.join("package.json"),
+            r#"{"name":"antigravity","productName":"Antigravity","version":"2.20.1"}"#,
+        )
+        .expect("write package.json");
+
+        let metadata = read_antigravity_package_json_metadata(install.path())
+            .expect("read version metadata from package.json");
+        assert_eq!(metadata.version, "2.20.1");
+        assert_eq!(metadata.product_name, "Antigravity");
+        assert_eq!(metadata.source, "package.json");
+    }
+
+    #[test]
+    fn antigravity_metadata_prioritizes_product_json_over_package_json() {
+        let install = MetadataTestDir::new("product-over-package");
+        let app_dir = install.path().join("resources").join("app");
+        std::fs::create_dir_all(&app_dir).expect("create app dir");
+        std::fs::write(
+            app_dir.join("product.json"),
+            r#"{"nameShort":"Antigravity IDE","ideVersion":"2.5.5"}"#,
+        )
+        .expect("write product.json");
+        std::fs::write(
+            app_dir.join("package.json"),
+            r#"{"name":"antigravity-ide","version":"1.107.0"}"#,
+        )
+        .expect("write package.json");
+
+        let metadata = read_antigravity_product_json_metadata(install.path())
+            .expect("read product.json metadata");
+        assert_eq!(metadata.version, "2.5.5");
+        assert_eq!(metadata.product_name, "Antigravity IDE");
+
+        assert!(read_antigravity_package_json_metadata(install.path()).is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn antigravity_resolves_system_launcher_to_opt_install_root() {
+        let root = crate::modules::process::antigravity_install_root_from_path(Path::new(
+            "/usr/bin/antigravity",
+        ));
+        assert_eq!(root, Some(PathBuf::from("/opt/antigravity")));
+
+        let ide_root = crate::modules::process::antigravity_install_root_from_path(Path::new(
+            "/usr/bin/antigravity-ide",
+        ));
+        assert_eq!(ide_root, Some(PathBuf::from("/opt/antigravity-ide")));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn live_antigravity_installed_version_is_detected() {
+        let antigravity_info = resolve_antigravity_installed_version_info_for_target(Some("antigravity"));
+        assert!(
+            antigravity_info.is_some(),
+            "Antigravity standalone should be detected on this machine"
+        );
+        let info = antigravity_info.unwrap();
+        assert_eq!(info.product_name, "Antigravity");
+        assert_eq!(info.version, "2.24.0");
+
+        let ide_info = resolve_antigravity_installed_version_info_for_target(Some("antigravity_ide"));
+        assert!(
+            ide_info.is_some(),
+            "Antigravity IDE should be detected on this machine"
+        );
+        let ide = ide_info.unwrap();
+        assert_eq!(ide.product_name, "Antigravity IDE");
+        assert_eq!(ide.version, "2.5.5");
     }
 
     #[test]

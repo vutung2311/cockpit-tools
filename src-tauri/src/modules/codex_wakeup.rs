@@ -1197,9 +1197,8 @@ fn append_version_manager_cli_dirs(dirs: &mut Vec<PathBuf>, home: &Path) {
     }
     if let Some(nvm_dir) = std::env::var_os("NVM_DIR") {
         append_node_version_bin_dirs(dirs, PathBuf::from(nvm_dir).join("versions/node"));
-    } else {
-        append_node_version_bin_dirs(dirs, home.join(".nvm/versions/node"));
     }
+    append_node_version_bin_dirs(dirs, home.join(".nvm/versions/node"));
 
     if let Some(fnm_multishell) = std::env::var_os("FNM_MULTISHELL_PATH") {
         push_unique_dir(dirs, PathBuf::from(fnm_multishell));
