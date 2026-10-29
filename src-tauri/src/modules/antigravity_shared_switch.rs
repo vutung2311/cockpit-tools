@@ -61,8 +61,8 @@ pub(crate) fn switch(
     let mut stopped_hubs = Vec::new();
     let written = (|| {
         if desktop_running {
-            let dir = modules::antigravity_paths::legacy_default_user_data_dir()?;
-            let dir = dir.to_string_lossy().into_owned();
+            let dir_path = modules::antigravity_paths::legacy_default_user_data_dir()?;
+            let dir = dir_path.to_string_lossy().into_owned();
             process::close_antigravity_legacy_instances(
                 std::slice::from_ref(&dir),
                 &dir,
@@ -71,6 +71,8 @@ pub(crate) fn switch(
             )?;
             desktop_closed = true;
             let _ = antigravity_legacy_instance::update_default_pid(None);
+            process::close_antigravity_legacy_background_processes(5)?;
+            process::clear_stale_antigravity_singleton_lock(&dir_path)?;
         }
         if ide_running {
             let dir = instance::get_default_user_data_dir()?;
@@ -90,10 +92,28 @@ pub(crate) fn switch(
         }
         match target {
             SwitchTarget::Cli => {
-                antigravity_credential::write_antigravity_cli_switch_credentials(account)
+                antigravity_credential::write_antigravity_cli_switch_credentials(account)?;
             }
-            _ => antigravity_credential::write_antigravity_desktop_switch_credentials(account),
+            _ => {
+                antigravity_credential::write_antigravity_desktop_switch_credentials(account)?;
+            }
         }
+        if let Ok(legacy_dir) = modules::antigravity_paths::legacy_default_user_data_dir() {
+            if legacy_dir.exists() {
+                crate::commands::account::update_antigravity_app_storage(&legacy_dir, account);
+                if let Ok(db_path) = modules::antigravity_paths::legacy_state_db_path() {
+                    if db_path.exists() {
+                        let _ = modules::db::inject_account_token_to_path(&db_path, account);
+                    }
+                }
+            }
+        }
+        if let Ok(ide_dir) = instance::get_default_user_data_dir() {
+            if ide_dir.exists() {
+                let _ = instance::inject_account_to_profile_with_account(&ide_dir, account);
+            }
+        }
+        Ok(())
     })();
     #[cfg(target_os = "macos")]
     let hub_error = hub::restart(stopped_hubs).err();

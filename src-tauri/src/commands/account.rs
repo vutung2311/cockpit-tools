@@ -212,7 +212,7 @@ fn merge_antigravity_app_storage(
     serde_json::to_string_pretty(&json).map_err(|e| format!("序列化 app_storage.json 失败: {}", e))
 }
 
-fn update_antigravity_app_storage(user_data_dir: &Path, account: &models::Account) {
+pub(crate) fn update_antigravity_app_storage(user_data_dir: &Path, account: &models::Account) {
     let storage_path = user_data_dir.join("app_storage.json");
     // 文件不存在时不主动创建：客户端首次启动会自行生成，且其余字段我们无法得知，
     // 此时登录账号以系统凭据 / state.vscdb 为准

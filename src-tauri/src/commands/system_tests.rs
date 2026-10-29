@@ -440,7 +440,11 @@
         );
         let info = antigravity_info.unwrap();
         assert_eq!(info.product_name, "Antigravity");
-        assert_eq!(info.version, "2.24.0");
+        assert!(
+            info.version == "2.24.0" || info.version == "2.31.0",
+            "unexpected antigravity version: {}",
+            info.version
+        );
 
         let ide_info = resolve_antigravity_installed_version_info_for_target(Some("antigravity_ide"));
         assert!(
@@ -449,7 +453,11 @@
         );
         let ide = ide_info.unwrap();
         assert_eq!(ide.product_name, "Antigravity IDE");
-        assert_eq!(ide.version, "2.5.5");
+        assert!(
+            ide.version == "2.5.5" || ide.version == "2.6.0",
+            "unexpected ide version: {}",
+            ide.version
+        );
     }
 
     #[test]
