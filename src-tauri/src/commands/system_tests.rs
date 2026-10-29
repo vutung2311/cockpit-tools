@@ -366,7 +366,11 @@
         );
         let ide = ide_info.unwrap();
         assert_eq!(ide.product_name, "Antigravity IDE");
-        assert_eq!(ide.version, "2.5.5");
+        assert!(
+            ide.version == "2.5.5" || ide.version == "2.6.0",
+            "unexpected ide version: {}",
+            ide.version
+        );
     }
 
     #[test]

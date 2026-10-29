@@ -2749,6 +2749,14 @@ pub async fn switch_account_local_no_restart(account_id: &str) -> Result<Account
         }
     }
 
+    if let Ok(legacy_dir) = modules::antigravity_legacy_instance::get_default_user_data_dir() {
+        if legacy_dir.exists() {
+            if let Err(e) = modules::antigravity_legacy_instance::inject_account_to_profile(&legacy_dir, account_id) {
+                modules::logger::log_warn(&format!("[Switch][NoRestart] 注入独立版目录失败: {}", e));
+            }
+        }
+    }
+
     modules::logger::log_info(&format!(
         "[Switch][NoRestart] 本地切号完成: {}",
         account.email

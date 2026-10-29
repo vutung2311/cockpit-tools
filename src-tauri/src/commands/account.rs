@@ -662,6 +662,21 @@ pub async fn switch_account(
         }
     }
 
+    // 6. 同步更新独立版系统凭据（Secret Service / Keychain）与独立版存储（若存在对应目录）
+    if let Ok(legacy_dir) = modules::antigravity_legacy_instance::get_default_user_data_dir() {
+        if legacy_dir.exists() {
+            if let Err(e) = modules::antigravity_credential::write_antigravity_system_credential(&account) {
+                modules::logger::log_warn(&format!("[Switch] 同步独立版系统凭据失败 (非致命): {}", e));
+            }
+            update_antigravity_app_storage(&legacy_dir, &account);
+            if let Ok(db_path) = legacy_antigravity_state_db_path() {
+                if db_path.exists() {
+                    let _ = modules::db::inject_account_token_to_path(&db_path, &account);
+                }
+            }
+        }
+    }
+
     // 7. 启动 Antigravity IDE（带默认实例自定义启动参数；启动失败不阻断切号，保持原行为）
     modules::logger::log_info("正在启动 Antigravity IDE 默认实例...");
     let default_settings = modules::instance::load_default_settings()?;

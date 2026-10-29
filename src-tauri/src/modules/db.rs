@@ -169,6 +169,9 @@ fn inject_token_to_path_with_metadata(
     )
     .map_err(|e| format!("写入 Onboarding 标记失败: {}", e))?;
 
+    // 清理遗留的旧版独立版认证状态，避免与新 OAuth Token 冲突
+    let _ = conn.execute("DELETE FROM ItemTable WHERE key = 'antigravityAuthStatus'", []);
+
     crate::modules::logger::log_info("Token 注入成功");
     Ok(format!("Token 注入成功！\n数据库: {:?}", db_path))
 }
@@ -228,20 +231,22 @@ fn inject_unified_oauth_token(
 }
 
 fn inject_user_status(conn: &Connection, email: &str) -> Result<(), String> {
-    // 检查是否已存在 userStatus；如果已存在完整配置，绝不覆盖，避免抹掉已缓存的模型与特性
-    let existing_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.userStatus'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-
-    if existing_count > 0 {
-        crate::modules::logger::log_info(
-            "antigravityUnifiedStateSync.userStatus 已存在，保留完整配置由 Language Server 动态同步",
-        );
-        return Ok(());
+    // 检查是否已存在 userStatus；如果已存在完整配置且包含当前账号邮箱，则保留避免抹掉已缓存的模型与特性
+    if let Ok(existing_value) = conn.query_row(
+        "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.userStatus'",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        if let Ok(decoded) = general_purpose::STANDARD.decode(&existing_value) {
+            if let Some(existing_email) = protobuf::extract_email_from_unified_user_status(&decoded) {
+                if existing_email.trim().eq_ignore_ascii_case(email.trim()) {
+                    crate::modules::logger::log_info(
+                        "antigravityUnifiedStateSync.userStatus 已存在且邮箱匹配，保留完整配置由 Language Server 动态同步",
+                    );
+                    return Ok(());
+                }
+            }
+        }
     }
 
     let payload = protobuf::create_minimal_user_status_payload(email);
@@ -377,6 +382,96 @@ mod tests {
         // 5. 普通非 GCP ToS 个人账号返回 None
         let acc_personal = make_test_account(Some(false), None);
         assert_eq!(resolve_account_project_id(&acc_personal), None);
+    }
+
+    #[test]
+    fn test_inject_user_status_overwrites_on_account_switch() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute(
+            "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .expect("create ItemTable");
+
+        inject_user_status(&conn, "user_a@example.com").expect("inject user a");
+        let val_a: String = conn
+            .query_row(
+                "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.userStatus'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read user a");
+        let decoded_a = general_purpose::STANDARD.decode(&val_a).expect("decode");
+        let email_a = protobuf::extract_email_from_unified_user_status(&decoded_a);
+        assert_eq!(
+            email_a.as_deref(),
+            Some("user_a@example.com"),
+            "user a email should be present"
+        );
+
+        inject_user_status(&conn, "user_a@example.com").expect("inject user a again");
+        let val_a_again: String = conn
+            .query_row(
+                "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.userStatus'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read user a again");
+        assert_eq!(val_a, val_a_again, "same user status should be preserved");
+
+        inject_user_status(&conn, "user_b@example.com").expect("inject user b");
+        let val_b: String = conn
+            .query_row(
+                "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.userStatus'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read user b");
+        let decoded_b = general_purpose::STANDARD.decode(&val_b).expect("decode");
+        let email_b = protobuf::extract_email_from_unified_user_status(&decoded_b);
+        assert_eq!(
+            email_b.as_deref(),
+            Some("user_b@example.com"),
+            "user b email should be present"
+        );
+    }
+
+    #[test]
+    fn test_inject_token_clears_legacy_antigravity_auth_status() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let db_path = temp_dir.path().join("state.vscdb");
+        let conn = Connection::open(&db_path).expect("open db");
+        conn.execute(
+            "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .expect("create ItemTable");
+        conn.execute(
+            "INSERT INTO ItemTable (key, value) VALUES ('antigravityAuthStatus', '{\"old\":\"data\"}')",
+            [],
+        )
+        .expect("insert legacy auth");
+
+        inject_token_to_path_with_metadata(
+            &db_path,
+            "dummy_access",
+            "dummy_refresh",
+            9999999999,
+            Some(false),
+            None,
+            Some("test@example.com"),
+            None,
+        )
+        .expect("inject token");
+
+        let auth_status_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ItemTable WHERE key = 'antigravityAuthStatus'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count auth status");
+        assert_eq!(auth_status_count, 0, "legacy antigravityAuthStatus must be deleted");
     }
 }
 
