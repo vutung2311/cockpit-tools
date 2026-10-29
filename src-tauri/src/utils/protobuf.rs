@@ -330,7 +330,7 @@ fn extract_email_from_unified_entry(data: &[u8]) -> Option<String> {
     let row_data = row_data?;
     let payload_b64 = extract_string_field(row_data, 1)?;
     let payload = general_purpose::STANDARD.decode(payload_b64).ok()?;
-    extract_string_field(&payload, 3)
+    extract_string_field(&payload, 7).or_else(|| extract_string_field(&payload, 3))
 }
 
 fn extract_string_field(data: &[u8], target_field: u32) -> Option<String> {

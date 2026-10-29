@@ -71,6 +71,11 @@ pub(crate) async fn switch_account_desktop(
                 let db_path = legacy_antigravity_state_db_path()?;
                 modules::db::inject_account_token_to_path(&db_path, &account)?;
                 update_antigravity_app_storage(&default_dir, &account);
+                if let Ok(ide_dir) = modules::instance::get_default_user_data_dir() {
+                    if ide_dir.exists() {
+                        let _ = modules::instance::inject_account_to_profile_with_account(&ide_dir, &account);
+                    }
+                }
                 Ok(())
             },
             || {

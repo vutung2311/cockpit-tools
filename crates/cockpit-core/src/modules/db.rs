@@ -124,6 +124,9 @@ fn inject_token_to_path_with_metadata(
     )
     .map_err(|e| format!("写入 Onboarding 标记失败: {}", e))?;
 
+    // 清理遗留的旧版独立版认证状态，避免与新 OAuth Token 冲突
+    let _ = conn.execute("DELETE FROM ItemTable WHERE key = 'antigravityAuthStatus'", []);
+
     crate::modules::logger::log_info("Token 注入成功");
     Ok(format!("Token 注入成功！\n数据库: {:?}", db_path))
 }
@@ -182,6 +185,21 @@ fn inject_unified_oauth_token(
 }
 
 fn inject_user_status(conn: &Connection, email: &str) -> Result<(), String> {
+    // 检查是否已存在 userStatus；如果已存在完整配置且包含当前账号邮箱，则保留避免抹掉已缓存的模型与特性
+    if let Ok(existing_value) = conn.query_row(
+        "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.userStatus'",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        if let Ok(decoded) = general_purpose::STANDARD.decode(&existing_value) {
+            if let Some(existing_email) = protobuf::extract_email_from_unified_user_status(&decoded) {
+                if existing_email.trim().eq_ignore_ascii_case(email.trim()) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     let payload = protobuf::create_minimal_user_status_payload(email);
     let topic = protobuf::create_unified_topic_entry("userStatusSentinelKey", &payload);
     let topic_b64 = general_purpose::STANDARD.encode(topic);
