@@ -311,7 +311,8 @@ async fn image_bootstrap_disconnect_retries_only_within_its_budget_on_the_same_o
         response.json::<Value>().await.unwrap()["data"][0]["b64_json"],
         "AA=="
     );
-    assert_eq!(fixture.host.selections.load(Ordering::SeqCst), 1);
+    // Transport recovery re-resolves the route once per retry, pinned to the same owner.
+    assert_eq!(fixture.host.selections.load(Ordering::SeqCst), 2);
     let report = fixture.report().await;
     assert!(report.success);
     assert_eq!(report.account_id, "image-read-account");
@@ -361,7 +362,10 @@ async fn image_bootstrap_disconnect_honors_zero_and_exhausted_retry_budgets() {
             .unwrap()
             .contains("stage=bootstrap"));
         assert_eq!(calls.load(Ordering::SeqCst), usize::from(retries) + 1);
-        assert_eq!(fixture.host.selections.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            fixture.host.selections.load(Ordering::SeqCst),
+            usize::from(retries) + 1
+        );
         assert_eq!(fixture.host.capacity.available_permits(), 1);
         fixture.close().await;
     }

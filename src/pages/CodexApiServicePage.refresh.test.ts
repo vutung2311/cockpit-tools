@@ -7,6 +7,8 @@ import { deferred, loadHookModule, settlePromises } from '../../tests/helpers/re
 import { parseModelRuleText } from '../utils/codexApiKeyModelRules';
 import { isCodexLaunchUnconfirmed } from '../utils/codexLaunchConfirmation';
 import { parseContextWindowDrafts } from '../utils/codexModelContextWindows';
+import { formatPriceDraftValue } from '../utils/codexModelPricingDraft';
+import { parseModelAliasText, serializeModelAliases } from '../utils/codexServiceModelAliases';
 import { isCodexAgentIdentityAccount, isCodexApiKeyAccount, isCodexPendingOAuthAccount, isCodexWebSessionAccount } from '../types/codex';
 
 const pendingLaunch = 'CODEX_START_CONFIRMATION_UNCERTAIN:{"beforePids":[41]}';
@@ -100,8 +102,9 @@ function controller() {
       if (failure) throw new Error('save failed');
     },
     modelPricingRows: [{ modelId: 'model', inputUsdPerMillion: 1, outputUsdPerMillion: 2, hasPreset: false, custom: false }],
+    formatPriceDraftValue,
     updateModelPricingDraft: (draft: object, field: string, value: string) => ({ ...draft, [field]: value }),
-    parseModelRuleText,
+    parseModelRuleText, parseModelAliasText, serializeModelAliases,
     isCodexLaunchUnconfirmed, fetchCurrentAccount: async () => {}, refreshApiServiceCurrent: async () => {},
     statsTimeRange: { startAt: 20, endAt: 30 }, sampledStatsRevision: 0,
     window: {

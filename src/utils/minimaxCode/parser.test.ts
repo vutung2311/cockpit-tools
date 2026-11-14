@@ -121,10 +121,11 @@ test('lands each credit type in a labelled group instead of 其他', () => {
     (_key, defaultValue) => defaultValue ?? '',
   );
 
-  const labels = groups.filter((group) => group.visible).map((group) => group.label);
-  assert.ok(labels.includes('活动赠送包'), `expected 活动赠送包, got ${JSON.stringify(labels)}`);
-  assert.ok(labels.includes('加量包'), `expected 加量包, got ${JSON.stringify(labels)}`);
-  assert.ok(!labels.includes('其他'), `其他 should be empty, got ${JSON.stringify(labels)}`);
+  // Labels come from the locale files, so assert on the group each credit type lands in.
+  const keys = groups.filter((group) => group.visible).map((group) => group.key);
+  assert.ok(keys.includes('activity'), `expected 活动赠送包 (activity), got ${JSON.stringify(keys)}`);
+  assert.ok(keys.includes('extra'), `expected 加量包 (extra), got ${JSON.stringify(keys)}`);
+  assert.ok(!keys.includes('other'), `其他 (other) should be empty, got ${JSON.stringify(keys)}`);
 });
 
 test('drops detail rows the official client would discard', () => {

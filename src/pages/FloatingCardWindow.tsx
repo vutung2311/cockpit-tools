@@ -1149,11 +1149,14 @@ export function FloatingCardWindow() {
   const hideRelayBalance = relayBalanceDisabled && selectedPlatform === 'codex' && viewedAccount != null
     && isCodexNewApiAccount(viewedAccount as typeof codexAccounts[number]);
   const quotaItems = hideRelayBalance ? [] : presentation?.quotaItems ?? [];
+  // Cursor's account page also lists On-Demand spend; the card keeps the primary bars only.
   const visibleQuotaItems =
-    selectedPlatform === 'antigravity' || selectedPlatform === 'antigravity_ide'
-      || selectedPlatform === 'workbuddy' || selectedPlatform === 'codebuddy_cn' || selectedPlatform === 'cursor'
-      ? quotaItems
-      : quotaItems.slice(0, 2);
+    selectedPlatform === 'cursor'
+      ? quotaItems.filter((item) => item.key !== 'on_demand')
+      : selectedPlatform === 'antigravity' || selectedPlatform === 'antigravity_ide'
+        || selectedPlatform === 'workbuddy' || selectedPlatform === 'codebuddy_cn'
+        ? quotaItems
+        : quotaItems.slice(0, 2);
   const accountStateLabel = viewedAccount
     ? isCurrentViewed
       ? t('floatingCard.currentAccount', '当前账号')
