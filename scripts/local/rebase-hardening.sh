@@ -60,6 +60,20 @@ require src-tauri/src/modules/kiro_oauth.rs 'normalize_idc_region(resolve_idc_re
 require src-tauri/src/modules/webdav_sync.rs 'ensure_secure_transport(&normalized_base_url)' "WebDAV https-only"
 require src-tauri/src/modules/diagnostics.rs 'BEARER_SCHEME_RE' "Sentry bearer redaction"
 require src/pages/ApiKeyFunPage.tsx 'isApiKeyFunHostUrl(remoteBaseUrl)' "APIKEY.FUN base URL pinned to apikey.fan"
+
+# A guard only helps if nothing goes around it: exactly one command handler, and no
+# WebSocket accept without the Origin callback (test files excluded).
+handlers="$(grep -rF --include='*.rs' '.invoke_handler(' src-tauri/src | wc -l)"
+if [ "$handlers" -ne 1 ]; then
+  echo "FORBIDDEN: expected exactly one .invoke_handler( in src-tauri/src" >&2
+  fail=1
+fi
+unguarded_ws="$(grep -rlF --include='*.rs' 'accept_async(' src-tauri/src | grep -v '_tests' || true)"
+if [ -n "$unguarded_ws" ]; then
+  echo "FORBIDDEN: WebSocket accept without Origin check in: $unguarded_ws" >&2
+  fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "error: some hardening changes were lost in the rebase; restore them before building" >&2
   exit 3
