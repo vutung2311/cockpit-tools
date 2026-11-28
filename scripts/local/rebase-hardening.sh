@@ -61,11 +61,16 @@ require src-tauri/src/modules/webdav_sync.rs 'ensure_secure_transport(&normalize
 require src-tauri/src/modules/diagnostics.rs 'BEARER_SCHEME_RE' "Sentry bearer redaction"
 require src/pages/ApiKeyFunPage.tsx 'isApiKeyFunHostUrl(remoteBaseUrl)' "APIKEY.FUN base URL pinned to apikey.fan"
 
-# A guard only helps if nothing goes around it: exactly one command handler, and no
-# WebSocket accept without the Origin callback (test files excluded).
+# A guard only helps if nothing goes around it: every command handler must be
+# wrapped in ipc_guard::guard (only lib.rs and frontend_smoke.rs may register one),
+# and no WebSocket accept without the Origin callback (test files excluded).
 handlers="$(grep -rF --include='*.rs' '.invoke_handler(' src-tauri/src | wc -l)"
-if [ "$handlers" -ne 1 ]; then
-  echo "FORBIDDEN: expected exactly one .invoke_handler( in src-tauri/src" >&2
+unguarded_handlers="$(grep -rnF --include='*.rs' '.invoke_handler(' src-tauri/src | grep -v 'ipc_guard::guard(' || true)"
+if [ "$handlers" -lt 1 ] || [ "$handlers" -gt 2 ] || [ -n "$unguarded_handlers" ]; then
+  echo "FORBIDDEN: expected 1..2 guarded .invoke_handler( in src-tauri/src (got $handlers)" >&2
+  if [ -n "$unguarded_handlers" ]; then
+    echo "$unguarded_handlers" >&2
+  fi
   fail=1
 fi
 unguarded_ws="$(grep -rlF --include='*.rs' 'accept_async(' src-tauri/src | grep -v '_tests' || true)"

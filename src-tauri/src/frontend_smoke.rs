@@ -123,7 +123,7 @@ fn run(output: PathBuf) -> Result<(), String> {
     let setup_state = state.clone();
     let page_state = state.clone();
     let app = tauri::Builder::default()
-        .invoke_handler(move |invoke| {
+        .invoke_handler(crate::ipc_guard::guard(move |invoke| {
             let command = invoke.message.command().to_string();
             let body = match invoke.message.payload() { InvokeBody::Json(value) => value.clone(), _ => Value::Null };
             let handle = invoke.message.webview().app_handle().clone();
@@ -181,7 +181,7 @@ fn run(output: PathBuf) -> Result<(), String> {
                 }
             }
             true
-        })
+        }))
         .setup(move |app| {
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Cockpit Tools — isolated frontend verification")
