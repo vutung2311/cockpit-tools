@@ -39,6 +39,7 @@ pub fn close_antigravity_instances(
         user_data_dirs,
         timeout_secs,
         close_pids,
+        force_close_pids,
         move || {
             collect_antigravity_process_entries_for_managed_dirs(
                 &collect_dirs,
@@ -95,6 +96,7 @@ pub fn close_antigravity_legacy_instances(
         user_data_dirs,
         timeout_secs,
         close_pids,
+        force_close_pids,
         collect_antigravity_legacy_process_entries,
         |entries, target_dirs| {
             select_main_pids_by_target_dirs(entries, target_dirs, default_dir.as_deref())
@@ -326,6 +328,7 @@ fn close_user_data_dir_scoped_instances(
         user_data_dirs,
         timeout_secs,
         close_pids,
+        force_close_pids,
         collect_entries,
         |entries, target_dirs| {
             select_main_pids_by_target_dirs(entries, target_dirs, default_dir.as_deref())
@@ -661,6 +664,7 @@ pub fn close_trae_platform_instances(
         user_data_dirs,
         timeout_secs,
         close_pids,
+        force_close_pids,
         || collect_trae_process_entries_for_platform(platform),
         |entries, target_dirs| {
             select_main_pids_by_target_dirs(entries, target_dirs, default_dir.as_deref())

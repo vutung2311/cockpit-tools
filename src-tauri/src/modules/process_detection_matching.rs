@@ -3980,6 +3980,7 @@ fn close_managed_instances_common<CollectEntries, SelectMainPids, CollectRemaini
     user_data_dirs: &[String],
     timeout_secs: u64,
     close_targets: impl Fn(&[u32], u64) -> Result<(), String>,
+    force_close_targets: impl Fn(&[u32], u64) -> Result<(), String>,
     collect_entries: CollectEntries,
     select_main_pids: SelectMainPids,
     collect_remaining_entries: CollectRemainingEntries,
@@ -4076,7 +4077,7 @@ where
                 log_prefix,
                 summarize_pid_list_for_log(&remaining_pids)
             ));
-            if let Err(err) = force_close_pids(&remaining_pids, 6) {
+            if let Err(err) = force_close_targets(&remaining_pids, 6) {
                 crate::modules::logger::log_warn(&format!(
                     "[{}] retry force_close_pids returned error: {}",
                     log_prefix, err

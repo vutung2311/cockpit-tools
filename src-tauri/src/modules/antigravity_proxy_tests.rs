@@ -16,6 +16,7 @@ impl Fixture {
         for key in keys {
             std::env::set_var(key, root.path());
         }
+        super::super::codex_unified_proxy::reset_cache();
         Self {
             root,
             previous,
@@ -102,6 +103,7 @@ impl Drop for Fixture {
                 None => std::env::remove_var(key),
             }
         }
+        super::super::codex_unified_proxy::reset_cache();
     }
 }
 

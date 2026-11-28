@@ -357,7 +357,7 @@ mod tests {
         assert!(matches!(handle(request(VERSION + 1), true).await.outcome,
             Outcome::Error { code, .. } if code == "version_mismatch"));
         assert!(matches!(handle(request(VERSION), true).await.outcome,
-            Outcome::Ok { data } if data.as_array().is_some_and(|ids| ids.len() == 21)));
+            Outcome::Ok { data } if data.as_array().is_some_and(|ids| ids.len() == Platform::ALL.len())));
     }
 
     #[test]

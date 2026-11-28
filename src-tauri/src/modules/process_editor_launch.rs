@@ -2058,6 +2058,7 @@ pub fn close_vscode(user_data_dirs: &[String], timeout_secs: u64) -> Result<(), 
         user_data_dirs,
         timeout_secs,
         close_pids,
+        force_close_pids,
         collect_vscode_process_entries,
         |entries, target_dirs| {
             select_main_pids_by_target_dirs(entries, target_dirs, default_dir.as_deref())

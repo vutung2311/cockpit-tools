@@ -1290,10 +1290,12 @@ fn build_quota_data_from_response(
                             .get("description")
                             .and_then(|v| v.as_str())
                             .is_some_and(|s| !s.trim().is_empty());
+                        let is_unstarted_placeholder = !has_description
+                            && remaining_fraction.is_some_and(|fraction| fraction >= 1.0);
                         let reset_time = bucket
                             .get("resetTime")
                             .and_then(|v| v.as_str())
-                            .filter(|_| has_description)
+                            .filter(|_| !is_unstarted_placeholder)
                             .map(|s| s.to_string());
 
                         if let (Some(id), Some(fraction)) = (bucket_id, remaining_fraction) {

@@ -42,6 +42,13 @@ fn workbuddy_scoped_close_rechecks_after_taskkill_failure() {
             }
             entries
         };
+        let stop_target = |pids: &[u32], timeout: u64| {
+            stop_calls.borrow_mut().push((pids.to_vec(), timeout));
+            if pids == [old_pid] || remains_running {
+                return Err("taskkill failed with status exit code: 255".to_string());
+            }
+            Ok(())
+        };
         let result = close_managed_instances_common(
             "WorkBuddy Close",
             "Closing WorkBuddy instances",
@@ -51,13 +58,8 @@ fn workbuddy_scoped_close_rechecks_after_taskkill_failure() {
             "WorkBuddy is still running",
             std::slice::from_ref(&target_dir),
             20,
-            |pids, timeout| {
-                stop_calls.borrow_mut().push((pids.to_vec(), timeout));
-                if pids == [old_pid] || remains_running {
-                    return Err("taskkill failed with status exit code: 255".to_string());
-                }
-                Ok(())
-            },
+            &stop_target,
+            &stop_target,
             collect_entries,
             |entries, targets| select_main_pids_by_target_dirs(entries, targets, Some(&target_dir)),
             |targets| filter_entries_by_target_dirs(collect_entries(), targets, Some(&target_dir)),
