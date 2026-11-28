@@ -34,6 +34,8 @@ fn token(value: &str) -> TokenData {
 }
 fn seed(id: &str) -> Account {
     let mut account = Account::new(id.into(), "legacy@example.com".into(), token("old"));
+    account.created_at = 1_700_000_000;
+    account.last_used = 1_700_000_000;
     account.notes = Some("keep notes".into());
     save_account(&account).unwrap();
     let mut index = load_account_index().unwrap();

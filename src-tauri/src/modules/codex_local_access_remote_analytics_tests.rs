@@ -91,8 +91,22 @@ fn insert(conn: &Connection, id: i64, key: &str, time: i64) {
         VALUES(?1,?2,?1,?3,'public-model','private-account','secret@example.com','secret-upstream','secret error',1,10,12,0.5)",
         params![id.to_string(),time,key]).unwrap();
 }
+fn run_backfill_batch(conn: &Connection) -> bool {
+    let mut retries = 0;
+    loop {
+        match remote_analytics_backfill_batch(conn) {
+            Ok(done) => return done,
+            Err(error) if error.to_lowercase().contains("interrupted") && retries < 16 => {
+                retries += 1;
+                continue;
+            }
+            Err(error) => panic!("remote_analytics_backfill_batch failed: {error}"),
+        }
+    }
+}
+
 fn finish(conn: &Connection) {
-    while !remote_analytics_backfill_batch(conn).unwrap() {}
+    while !run_backfill_batch(conn) {}
 }
 
 #[test]
@@ -102,7 +116,7 @@ fn background_backfill_recovers_and_tracks_live_writes_repricing_and_deletion() 
         insert(&conn, id, "A", REMOTE_HOUR);
     }
     ensure_remote_analytics_schema(&conn).unwrap();
-    assert!(!remote_analytics_backfill_batch(&conn).unwrap());
+    assert!(!run_backfill_batch(&conn));
     assert_eq!(
         conn.query_row("SELECT cursor FROM cockpit_key_analytics_state", [], |r| {
             r.get::<_, i64>(0)
@@ -448,12 +462,12 @@ fn reopening_database_resumes_durable_checkpoint_and_completed_migration_does_no
     {
         let conn=Connection::open(&path).unwrap();create_request_logs_table(&conn,true).unwrap();
         for id in 1..=70 {insert(&conn,id,"A",REMOTE_HOUR);}
-        assert!(!remote_analytics_backfill_batch(&conn).unwrap());
+        assert!(!run_backfill_batch(&conn));
         assert_eq!(conn.query_row("SELECT cursor FROM cockpit_key_analytics_state",[],|r|r.get::<_,i64>(0)).unwrap(),32);
     }
     let conn=Connection::open(&path).unwrap();finish(&conn);
     let changes=conn.total_changes();
-    assert!(remote_analytics_backfill_batch(&conn).unwrap());
+    assert!(run_backfill_batch(&conn));
     assert_eq!(conn.total_changes(),changes);
     assert_eq!(query_remote_key_stats(&conn,"A",0,2*REMOTE_HOUR).unwrap()["summary"]["requestCount"],70);
 }

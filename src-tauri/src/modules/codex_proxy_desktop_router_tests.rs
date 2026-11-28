@@ -114,14 +114,53 @@ impl Drop for LaunchFixture {
     }
 }
 
+static OCCUPY_PORTS_LOCK: LazyLock<Arc<Mutex<()>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(())));
+
+struct OccupiedPorts {
+    listeners: Vec<TcpListener>,
+    reserved_owner_keys: Vec<String>,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl OccupiedPorts {
+    async fn release(mut self) {
+        if !self.reserved_owner_keys.is_empty() {
+            let mut owners = PORT_OWNERS.lock().await;
+            for key in self.reserved_owner_keys.drain(..) {
+                owners.remove(&key);
+            }
+        }
+        self.listeners.clear();
+    }
+}
+
+impl Drop for OccupiedPorts {
+    fn drop(&mut self) {
+        if !self.reserved_owner_keys.is_empty() {
+            if let Ok(mut owners) = PORT_OWNERS.try_lock() {
+                for key in self.reserved_owner_keys.drain(..) {
+                    owners.remove(&key);
+                }
+            }
+        }
+    }
+}
+
 /// Own every unavailable candidate so another test releasing its socket cannot
 /// turn an expected startup failure into a successful installation mid-assertion.
-async fn occupy_candidate_ports(tag: &str) -> (String, Vec<TcpListener>) {
+async fn occupy_candidate_ports(tag: &str) -> (String, OccupiedPorts) {
+    let guard = OCCUPY_PORTS_LOCK.clone().lock_owned().await;
+    let existing_owners: HashSet<u16> = PORT_OWNERS.lock().await.values().copied().collect();
     for _ in 0..256 {
         let id = format!("{tag}-{}", uuid::Uuid::new_v4());
+        let candidates: Vec<u16> = candidate_ports(&id, None).collect();
+        if candidates.iter().any(|port| existing_owners.contains(port)) {
+            continue;
+        }
         let mut listeners = Vec::new();
         let mut complete = true;
-        for port in candidate_ports(&id, None) {
+        for port in candidates {
             match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
                 Ok(listener) => listeners.push(listener),
                 Err(_) => {
@@ -131,10 +170,47 @@ async fn occupy_candidate_ports(tag: &str) -> (String, Vec<TcpListener>) {
             }
         }
         if complete {
-            return (id, listeners);
+            return (
+                id,
+                OccupiedPorts {
+                    listeners,
+                    reserved_owner_keys: Vec::new(),
+                    _guard: guard,
+                },
+            );
         }
     }
-    panic!("could not reserve every candidate port for fixture {tag}");
+
+    let id = format!("{tag}-{}", uuid::Uuid::new_v4());
+    let mut listeners = Vec::new();
+    let mut busy_ports = Vec::new();
+    for port in candidate_ports(&id, None) {
+        match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
+            Ok(listener) => listeners.push(listener),
+            Err(_) => busy_ports.push(port),
+        }
+    }
+    assert!(
+        !listeners.is_empty(),
+        "expected at least one bindable candidate port for {tag}"
+    );
+    let mut reserved_owner_keys = Vec::with_capacity(busy_ports.len());
+    {
+        let mut owners = PORT_OWNERS.lock().await;
+        for port in busy_ports {
+            let key = format!("__test-blocker-{id}-{port}");
+            owners.insert(key.clone(), port);
+            reserved_owner_keys.push(key);
+        }
+    }
+    (
+        id,
+        OccupiedPorts {
+            listeners,
+            reserved_owner_keys,
+            _guard: guard,
+        },
+    )
 }
 
 #[test]
@@ -309,7 +385,7 @@ async fn occupied_entry_reports_start_failure_and_successful_retry() {
     let failed = entry_status(&id).unwrap();
     assert_eq!(failed.state, "failed");
     assert_eq!(failed.port, None);
-    drop(blockers);
+    blockers.release().await;
     ensure_route(&id, None).await.unwrap();
     let retry = entry_status(&id).unwrap();
     assert_eq!(retry.state, "listening");
@@ -353,7 +429,7 @@ async fn desktop_launch_never_falls_back_when_configured_entry_cannot_listen() {
         let saved = codex_account::load_account(&id).unwrap();
         assert_eq!(saved.egress_proxy_disabled, account.egress_proxy_disabled);
         assert_eq!(saved.egress_proxy_url, account.egress_proxy_url);
-        drop(blockers);
+        blockers.release().await;
         assert!(
             ensure(&id).await.unwrap().is_some(),
             "retry recovers {mode}"
