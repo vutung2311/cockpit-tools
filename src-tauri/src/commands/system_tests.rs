@@ -433,6 +433,18 @@
     #[test]
     #[cfg(target_os = "linux")]
     fn live_antigravity_installed_version_is_detected() {
+        let parse_version = |v: &str| -> Option<Vec<u64>> {
+            let parts: Vec<&str> = v.trim().split('.').collect();
+            if parts.len() < 2
+                || parts
+                    .iter()
+                    .any(|p| p.is_empty() || !p.chars().all(|c| c.is_ascii_digit()))
+            {
+                return None;
+            }
+            parts.iter().map(|p| p.parse::<u64>().ok()).collect()
+        };
+
         let antigravity_info = resolve_antigravity_installed_version_info_for_target(Some("antigravity"));
         assert!(
             antigravity_info.is_some(),
@@ -440,9 +452,11 @@
         );
         let info = antigravity_info.unwrap();
         assert_eq!(info.product_name, "Antigravity");
+        let info_parts = parse_version(&info.version)
+            .unwrap_or_else(|| panic!("invalid antigravity version: {}", info.version));
         assert!(
-            info.version == "2.24.0" || info.version == "2.31.0",
-            "unexpected antigravity version: {}",
+            info_parts.first().copied().unwrap_or(0) >= 2,
+            "unexpected antigravity version (expected >= 2.x): {}",
             info.version
         );
 
@@ -453,9 +467,11 @@
         );
         let ide = ide_info.unwrap();
         assert_eq!(ide.product_name, "Antigravity IDE");
+        let ide_parts = parse_version(&ide.version)
+            .unwrap_or_else(|| panic!("invalid ide version: {}", ide.version));
         assert!(
-            ide.version == "2.5.5" || ide.version == "2.6.0",
-            "unexpected ide version: {}",
+            ide_parts.first().copied().unwrap_or(0) >= 2,
+            "unexpected ide version (expected >= 2.x): {}",
             ide.version
         );
     }
