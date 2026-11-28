@@ -428,7 +428,7 @@ async fn run_bounded(
     let connection = tokio::select! { biased;
         _ = stop.changed() => return Ok(()),
         _ = tokio::time::sleep_until(deadline) => return Err("browser preload connection timed out".into()),
-        value = timeout(command_timeout, connect_async_with_config(endpoint, Some(config), false)) => value
+        value = timeout(command_timeout, connect_async_with_config(endpoint, Some(config), true)) => value
     };
     let (socket, _) = connection
         .map_err(|_| "browser preload connection timed out")?

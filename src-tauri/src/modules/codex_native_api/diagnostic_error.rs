@@ -61,6 +61,7 @@ pub(crate) fn transport_failure(
     let mut timed_out = false;
     let mut tls_decrypt = false;
     let mut http2_decrypt = false;
+    let mut saw_hyper = false;
     let mut network_failure = false;
     // Bootstrap can rewrap a reqwest body before canonical adaptation. Its
     // real TLS cause sits deeper than eight wrappers; still bound traversal
@@ -74,6 +75,7 @@ pub(crate) fn transport_failure(
         if let Some(error) = error.downcast_ref::<ServiceError>() {
             return error.clone();
         }
+        saw_hyper |= error.downcast_ref::<hyper::Error>().is_some();
         tls_decrypt |= matches!(
             error.downcast_ref::<rustls::Error>(),
             Some(rustls::Error::DecryptError)
@@ -89,6 +91,15 @@ pub(crate) fn transport_failure(
                 | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::ConnectionRefused
                 | std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::NotConnected
                 | std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::TimedOut)
+                || (saw_hyper
+                    && error.kind() == std::io::ErrorKind::Other
+                    && error.get_ref().is_some_and(|inner| {
+                        inner.source().is_some()
+                            && inner
+                                .to_string()
+                                .to_ascii_lowercase()
+                                .contains("unexpected eof while reading")
+                    }))
         }) || error.downcast_ref::<reqwest::Error>()
             .is_some_and(|error| error.is_connect() || error.is_timeout())
             || error.downcast_ref::<hyper::Error>()

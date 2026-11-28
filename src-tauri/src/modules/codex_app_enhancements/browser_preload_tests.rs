@@ -28,6 +28,7 @@ async fn mock(reject: Option<&'static str>, no_ack: bool, delay: Duration) -> Mo
         socket.write_all(response.as_bytes()).await.unwrap();
         drop(socket);
         let (socket, _) = listener.accept().await.unwrap();
+        socket.set_nodelay(true).unwrap();
         let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
         loop {
             tokio::select! {
